@@ -1,0 +1,26 @@
+# Source documents (do not commit to GitHub)
+*.docx
+*.doc
+*.pdf
+
+# LibreOffice / Office lock files
+.~lock.*#
+
+# Local notes (do not commit)
+INTERVIEW_QA.md
+
+# Secrets
+.env
+
+# Database
+*.db
+
+# Uploaded files
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

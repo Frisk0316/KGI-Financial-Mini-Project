@@ -1,0 +1,17 @@
+# Normalize line endings for all text files
+* text=auto
+
+# Force LF for Python and web files
+*.py    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# Treat these as binary
+*.db    binary
+*.pdf   binary
+*.docx  binary
+*.doc   binary
