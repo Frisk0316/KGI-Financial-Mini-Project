@@ -1,5 +1,5 @@
-import sqlite3
 import os
+import sqlite3
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'knowledge_shredder.db')
 
@@ -84,35 +84,39 @@ def insert_document(trainer_id, file_name, raw_text):
         return cur.lastrowid
 
 
-def tag_document(doc_id, domain_ids):
-    with get_db_connection() as conn:
+def replace_document_domains(conn, doc_id, domain_ids):
+    conn.execute("DELETE FROM Document_Domain_Map WHERE doc_id = ?", (doc_id,))
+    if domain_ids:
         conn.executemany(
-            "INSERT OR IGNORE INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)",
+            "INSERT INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)",
             [(doc_id, did) for did in domain_ids]
         )
-        conn.commit()
 
 
-def insert_micro_modules(doc_id, modules):
+def replace_document_modules(conn, doc_id, modules):
+    conn.execute("DELETE FROM MicroModules WHERE doc_id = ?", (doc_id,))
+    conn.executemany(
+        """INSERT INTO MicroModules
+           (doc_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                doc_id,
+                m.get('title', ''),
+                m.get('content', ''),
+                m.get('key_takeaway', ''),
+                m.get('reading_time_minutes', 2.0),
+                m.get('sequence_order', i + 1),
+            )
+            for i, m in enumerate(modules)
+        ]
+    )
+
+
+def save_generated_content(doc_id, domain_ids, modules):
     with get_db_connection() as conn:
-        # Delete previous generation for this doc (idempotent re-generation)
-        conn.execute("DELETE FROM MicroModules WHERE doc_id = ?", (doc_id,))
-        conn.executemany(
-            """INSERT INTO MicroModules
-               (doc_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            [
-                (
-                    doc_id,
-                    m.get('title', ''),
-                    m.get('content', ''),
-                    m.get('key_takeaway', ''),
-                    m.get('reading_time_minutes', 2.0),
-                    m.get('sequence_order', i + 1),
-                )
-                for i, m in enumerate(modules)
-            ]
-        )
+        replace_document_domains(conn, doc_id, domain_ids)
+        replace_document_modules(conn, doc_id, modules)
         conn.commit()
 
 

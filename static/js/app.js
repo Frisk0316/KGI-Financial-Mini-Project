@@ -134,7 +134,7 @@ function initFileInput() {
 
 async function handleFileUpload(file) {
   const ext = file.name.split('.').pop().toLowerCase();
-  if (!['pdf', 'docx', 'doc', 'txt'].includes(ext)) {
+  if (!['pdf', 'docx', 'txt'].includes(ext)) {
     showError(`不支援 .${ext} 格式，請上傳 PDF、DOCX 或 TXT 檔案。`);
     return;
   }
@@ -181,7 +181,7 @@ function clearFile() {
 // ── Generation ───────────────────────────────────────────────────────────────
 
 async function handleGenerate() {
-  showLoading('Claude AI 生成微模組中，請稍候...');
+  showLoading('正在整理內容並生成微模組，請稍候...');
 
   try {
     const res = await fetch('/api/generate', {
@@ -228,6 +228,9 @@ function renderSplitScreen(rawText, result) {
   const sprintPanel = document.getElementById('sprint-panel');
   sprintPanel.innerHTML = '';
   (result.modules || []).forEach((mod, i) => {
+    const domainBadges = (result.domains || []).map(name =>
+      `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
+    ).join(' ');
     const card = document.createElement('div');
     card.className = 'card sprint-card mb-3';
     card.innerHTML = `
@@ -241,6 +244,7 @@ function renderSplitScreen(rawText, result) {
         </span>
       </div>
       <div class="card-body">
+        <div class="module-domain-pills mb-3">${domainBadges}</div>
         <p class="card-text">${escapeHtml(mod.content || '').replace(/\n/g, '<br>')}</p>
         ${mod.key_takeaway ? `
         <blockquote class="key-takeaway mb-0">

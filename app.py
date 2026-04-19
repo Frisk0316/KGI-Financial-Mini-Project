@@ -1,8 +1,7 @@
 import json
 import os
+import argparse
 
-import anthropic
-from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
@@ -11,17 +10,14 @@ from database import (
     get_document_with_modules,
     init_db,
     insert_document,
-    insert_micro_modules,
-    tag_document,
+    save_generated_content,
 )
 from file_parser import extract_text
 from llm import generate_micro_modules
 
-load_dotenv()
-
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'doc', 'txt'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
 
 UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 
@@ -121,6 +117,14 @@ def api_generate():
     if not domain_ids:
         return jsonify({'error': 'At least one domain tag must be selected before generating.'}), 400
 
+    if not isinstance(domain_ids, list):
+        return jsonify({'error': 'domain_ids must be an array of integers.'}), 400
+
+    try:
+        domain_ids = [int(did) for did in domain_ids]
+    except (TypeError, ValueError):
+        return jsonify({'error': 'domain_ids must contain valid integers.'}), 400
+
     # Resolve domain names
     all_domains = {d['domain_id']: d['domain_name'] for d in get_all_domains()}
     domain_names = []
@@ -137,14 +141,11 @@ def api_generate():
     try:
         llm_result = generate_micro_modules(doc['raw_text'], domain_names)
     except json.JSONDecodeError:
-        return jsonify({'error': 'The AI returned an unexpected response. Please try again.'}), 502
-    except anthropic.APIError as exc:
-        return jsonify({'error': f'Claude API error: {exc}'}), 502
-    except RuntimeError as exc:
-        return jsonify({'error': str(exc)}), 500
+        return jsonify({'error': 'The module generator returned an unexpected response. Please try again.'}), 502
+    except ValueError as exc:
+        return jsonify({'error': f'The module generator returned invalid data: {exc}'}), 502
 
-    tag_document(doc_id, domain_ids)
-    insert_micro_modules(doc_id, llm_result.get('modules', []))
+    save_generated_content(doc_id, domain_ids, llm_result['modules'])
 
     return jsonify({
         'doc_id': doc_id,
@@ -171,4 +172,8 @@ def api_document(doc_id):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    parser = argparse.ArgumentParser(description='Run the Knowledge Shredder development server.')
+    parser.add_argument('--port', type=int, default=5000, help='Port to bind the Flask server to.')
+    parser.add_argument('--debug', action='store_true', help='Enable Flask debug mode.')
+    args = parser.parse_args()
+    app.run(debug=args.debug, port=args.port)

@@ -32,7 +32,7 @@ def extract_text(filename: str, file_bytes: bytes) -> str:
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     if ext == 'pdf':
         return parse_pdf(file_bytes)
-    elif ext in ('docx', 'doc'):
+    elif ext == 'docx':
         return parse_docx(file_bytes)
     elif ext == 'txt':
         return parse_txt(file_bytes)

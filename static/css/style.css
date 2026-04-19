@@ -88,6 +88,11 @@
   font-size: 0.88rem;
   line-height: 1.7;
 }
+.module-domain-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
 .sprint-card .key-takeaway {
   border-left: 3px solid #ffc107;
   padding: 0.4rem 0.75rem;
