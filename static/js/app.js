@@ -4,25 +4,26 @@
 
 const state = {
   docId: null,
-  rawText: '',
+  previewText: '',
   fileName: '',
+  trainerId: 'trainer_001',
   selectedDomainIds: new Set(),
   allDomains: [],
+  activeJobId: null,
+  isGenerating: false,
 };
 
-// ── Initialisation ──────────────────────────────────────────────────────────
-
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadDomains();
-  initDragDrop();
-  initFileInput();
+  document.getElementById('trainer-id').addEventListener('input', handleTrainerIdInput);
   document.getElementById('btn-generate').addEventListener('click', handleGenerate);
   document.getElementById('btn-clear-file').addEventListener('click', clearFile);
   document.getElementById('domain-search').addEventListener('input', filterDomains);
+
+  await loadDomains();
+  initDragDrop();
+  initFileInput();
   updateGenerateButtonState();
 });
-
-// ── Domain Picker ────────────────────────────────────────────────────────────
 
 async function loadDomains() {
   try {
@@ -34,31 +35,42 @@ async function loadDomains() {
   }
 }
 
+function handleTrainerIdInput(event) {
+  state.trainerId = event.target.value.trim() || 'trainer_001';
+}
+
+function buildApiHeaders(extraHeaders = {}) {
+  return {
+    'X-Trainer-Id': state.trainerId || 'trainer_001',
+    ...extraHeaders,
+  };
+}
+
 function renderDomainList(domains) {
   const container = document.getElementById('domain-list');
   container.innerHTML = '';
-  domains.forEach(d => {
-    const id = `domain-cb-${d.domain_id}`;
-    const checked = state.selectedDomainIds.has(d.domain_id);
+  domains.forEach(domain => {
+    const id = `domain-cb-${domain.domain_id}`;
+    const checked = state.selectedDomainIds.has(domain.domain_id);
     const item = document.createElement('div');
     item.className = 'form-check domain-check-item';
-    item.dataset.domainId = d.domain_id;
+    item.dataset.domainId = domain.domain_id;
     item.innerHTML = `
-      <input class="form-check-input" type="checkbox" id="${id}" value="${d.domain_id}" ${checked ? 'checked' : ''}>
+      <input class="form-check-input" type="checkbox" id="${id}" value="${domain.domain_id}" ${checked ? 'checked' : ''}>
       <label class="form-check-label" for="${id}">
-        <span class="fw-semibold">${d.domain_name}</span>
-        <span class="text-muted small ms-1">— ${d.description}</span>
+        <span class="fw-semibold">${domain.domain_name}</span>
+        <span class="text-muted small ms-1">— ${domain.description}</span>
       </label>`;
-    item.querySelector('input').addEventListener('change', e => toggleDomain(d.domain_id, e.target.checked));
+    item.querySelector('input').addEventListener('change', event => toggleDomain(domain.domain_id, event.target.checked));
     container.appendChild(item);
   });
 }
 
 function filterDomains() {
-  const q = document.getElementById('domain-search').value.toLowerCase();
+  const query = document.getElementById('domain-search').value.toLowerCase();
   document.querySelectorAll('.domain-check-item').forEach(item => {
     const text = item.textContent.toLowerCase();
-    item.style.display = text.includes(q) ? '' : 'none';
+    item.style.display = text.includes(query) ? '' : 'none';
   });
 }
 
@@ -76,16 +88,15 @@ function renderSelectedPills() {
   const container = document.getElementById('selected-tags');
   container.innerHTML = '';
   state.selectedDomainIds.forEach(id => {
-    const domain = state.allDomains.find(d => d.domain_id === id);
+    const domain = state.allDomains.find(item => item.domain_id === id);
     if (!domain) return;
     const pill = document.createElement('span');
     pill.className = 'badge bg-primary d-flex align-items-center gap-1 px-2 py-1';
     pill.innerHTML = `#${domain.domain_name} <button class="btn-close btn-close-white" style="font-size:.6rem;" aria-label="移除"></button>`;
     pill.querySelector('button').addEventListener('click', () => {
       state.selectedDomainIds.delete(id);
-      // Uncheck the corresponding checkbox
-      const cb = document.getElementById(`domain-cb-${id}`);
-      if (cb) cb.checked = false;
+      const checkbox = document.getElementById(`domain-cb-${id}`);
+      if (checkbox) checkbox.checked = false;
       renderSelectedPills();
       updateGenerateButtonState();
     });
@@ -93,44 +104,49 @@ function renderSelectedPills() {
   });
 }
 
-// ── Generate button state ────────────────────────────────────────────────────
-
 function updateGenerateButtonState() {
   const btn = document.getElementById('btn-generate');
-  const canGenerate = state.docId !== null && state.selectedDomainIds.size > 0;
+  const canGenerate = state.docId !== null && state.selectedDomainIds.size > 0 && !state.isGenerating;
   btn.disabled = !canGenerate;
 
   const warn = document.getElementById('domain-warning');
-  // Show warning only if a doc is loaded but no domain selected
   warn.classList.toggle('d-none', state.docId === null || state.selectedDomainIds.size > 0);
 }
-
-// ── Drag-and-drop ────────────────────────────────────────────────────────────
 
 function initDragDrop() {
   const zone = document.getElementById('upload-zone');
   zone.addEventListener('click', () => document.getElementById('file-input').click());
-  zone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') document.getElementById('file-input').click(); });
+  zone.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      document.getElementById('file-input').click();
+    }
+  });
 
-  ['dragenter', 'dragover'].forEach(evt =>
-    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.add('drag-active'); })
+  ['dragenter', 'dragover'].forEach(eventName =>
+    zone.addEventListener(eventName, event => {
+      event.preventDefault();
+      zone.classList.add('drag-active');
+    })
   );
-  ['dragleave', 'drop'].forEach(evt =>
-    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.remove('drag-active'); })
+
+  ['dragleave', 'drop'].forEach(eventName =>
+    zone.addEventListener(eventName, event => {
+      event.preventDefault();
+      zone.classList.remove('drag-active');
+    })
   );
-  zone.addEventListener('drop', e => {
-    const file = e.dataTransfer.files[0];
+
+  zone.addEventListener('drop', event => {
+    const file = event.dataTransfer.files[0];
     if (file) handleFileUpload(file);
   });
 }
 
 function initFileInput() {
-  document.getElementById('file-input').addEventListener('change', e => {
-    if (e.target.files[0]) handleFileUpload(e.target.files[0]);
+  document.getElementById('file-input').addEventListener('change', event => {
+    if (event.target.files[0]) handleFileUpload(event.target.files[0]);
   });
 }
-
-// ── File Upload ──────────────────────────────────────────────────────────────
 
 async function handleFileUpload(file) {
   const ext = file.name.split('.').pop().toLowerCase();
@@ -141,18 +157,27 @@ async function handleFileUpload(file) {
 
   showLoading('解析文件中...');
   clearSplitScreen();
+  clearJobStatus();
+  hideError();
 
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('trainer_id', state.trainerId);
 
   try {
-    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      headers: buildApiHeaders(),
+      body: formData,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
     state.docId = data.doc_id;
-    state.rawText = data.raw_text;
+    state.previewText = data.preview_text;
     state.fileName = data.file_name;
+    state.trainerId = data.trainer_id;
+    document.getElementById('trainer-id').value = data.trainer_id;
 
     document.getElementById('file-name').textContent = data.file_name;
     document.getElementById('char-count').textContent = `${data.char_count.toLocaleString()} 字元`;
@@ -169,47 +194,85 @@ async function handleFileUpload(file) {
 
 function clearFile() {
   state.docId = null;
-  state.rawText = '';
+  state.previewText = '';
   state.fileName = '';
+  state.activeJobId = null;
+  state.isGenerating = false;
+
   document.getElementById('file-info').classList.add('d-none');
   document.getElementById('upload-zone').classList.remove('d-none');
   document.getElementById('file-input').value = '';
   clearSplitScreen();
+  clearJobStatus();
   updateGenerateButtonState();
 }
 
-// ── Generation ───────────────────────────────────────────────────────────────
-
 async function handleGenerate() {
-  showLoading('LLM 正在生成微模組，請稍候...');
+  showLoading('正在建立生成任務...');
+  hideError();
+  state.isGenerating = true;
+  updateGenerateButtonState();
 
   try {
     const res = await fetch('/api/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         doc_id: state.docId,
+        trainer_id: state.trainerId,
         domain_ids: [...state.selectedDomainIds],
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    renderSplitScreen(state.rawText, data);
+    state.activeJobId = data.job_id;
+    showJobStatus(data.status, `任務 #${data.job_id} 已建立，系統開始生成微模組。`);
+    hideLoading();
+
+    const job = await pollJobUntilFinished(data.job_id);
+    if (job.status !== 'completed' || !job.result) {
+      throw new Error(job.error_message || '生成任務未完成。');
+    }
+
+    renderSplitScreen(state.previewText, job.result);
   } catch (err) {
     showError(err.message);
   } finally {
+    state.isGenerating = false;
     hideLoading();
+    updateGenerateButtonState();
   }
 }
 
-// ── Split-Screen Render ──────────────────────────────────────────────────────
+async function pollJobUntilFinished(jobId) {
+  while (true) {
+    const res = await fetch(`/api/jobs/${jobId}`, {
+      headers: buildApiHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
 
-function renderSplitScreen(rawText, result) {
-  // Left: raw text
-  document.getElementById('raw-text-panel').textContent = rawText;
+    const statusMessages = {
+      queued: `任務 #${jobId} 已進入佇列，等待背景工作執行。`,
+      running: `任務 #${jobId} 正在生成中，請稍候。`,
+      completed: `任務 #${jobId} 已完成，結果如下。`,
+      failed: `任務 #${jobId} 失敗：${data.error_message || '請稍後重試。'}`,
+    };
 
-  // Domain pills (top right)
+    showJobStatus(data.status, statusMessages[data.status] || '正在同步任務狀態。');
+
+    if (data.status === 'completed' || data.status === 'failed') {
+      return data;
+    }
+
+    await wait(1200);
+  }
+}
+
+function renderSplitScreen(previewText, result) {
+  document.getElementById('raw-text-panel').textContent = previewText;
+
   const pillsContainer = document.getElementById('domain-pills');
   pillsContainer.innerHTML = '';
   (result.domains || []).forEach(name => {
@@ -219,28 +282,27 @@ function renderSplitScreen(rawText, result) {
     pillsContainer.appendChild(span);
   });
 
-  // Summary
-  if (result.document_summary) {
-    document.getElementById('summary-badge').textContent = result.document_summary;
-  }
+  document.getElementById('summary-badge').textContent = result.document_summary || '';
 
-  // Sprint cards
   const sprintPanel = document.getElementById('sprint-panel');
   sprintPanel.innerHTML = '';
-  (result.modules || []).forEach((mod, i) => {
+  (result.modules || []).forEach((mod, index) => {
+    const sprintOrder = mod.sequence_order != null ? mod.sequence_order : index + 1;
+    const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
     const domainBadges = (result.domains || []).map(name =>
       `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
     ).join(' ');
+
     const card = document.createElement('div');
     card.className = 'card sprint-card mb-3';
     card.innerHTML = `
       <div class="card-header d-flex justify-content-between align-items-center">
         <span class="fw-semibold">
-          <span class="badge bg-secondary me-1">Sprint ${mod.sequence_order ?? i + 1}</span>
+          <span class="badge bg-secondary me-1">Sprint ${sprintOrder}</span>
           ${escapeHtml(mod.title || '')}
         </span>
         <span class="badge bg-light text-dark border">
-          <i class="bi bi-clock me-1"></i>${mod.reading_time_minutes ?? 2} min
+          <i class="bi bi-clock me-1"></i>${readingTime} min
         </span>
       </div>
       <div class="card-body">
@@ -255,7 +317,6 @@ function renderSplitScreen(rawText, result) {
     sprintPanel.appendChild(card);
   });
 
-  // Show split screen and scroll into view
   const splitScreen = document.getElementById('split-screen');
   splitScreen.classList.remove('d-none');
   splitScreen.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -269,7 +330,29 @@ function clearSplitScreen() {
   document.getElementById('summary-badge').textContent = '';
 }
 
-// ── UI Helpers ───────────────────────────────────────────────────────────────
+function showJobStatus(status, message) {
+  const card = document.getElementById('job-status-card');
+  const badge = document.getElementById('job-status-badge');
+  const labelMap = {
+    queued: ['Queued', 'text-bg-secondary'],
+    running: ['Running', 'text-bg-primary'],
+    completed: ['Completed', 'text-bg-success'],
+    failed: ['Failed', 'text-bg-danger'],
+  };
+  const [label, badgeClass] = labelMap[status] || ['Pending', 'text-bg-secondary'];
+
+  badge.className = `badge ${badgeClass} mb-2`;
+  badge.textContent = label;
+  document.getElementById('job-status-message').textContent = message;
+  card.classList.remove('d-none');
+}
+
+function clearJobStatus() {
+  document.getElementById('job-status-card').classList.add('d-none');
+  document.getElementById('job-status-badge').className = 'badge text-bg-secondary mb-2';
+  document.getElementById('job-status-badge').textContent = 'Queued';
+  document.getElementById('job-status-message').textContent = '等待送出生成任務。';
+}
 
 function showLoading(message) {
   document.getElementById('loading-message').textContent = message;
@@ -285,6 +368,15 @@ function showError(message) {
   document.getElementById('error-message').textContent = message;
   alert.classList.remove('d-none');
   alert.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function hideError() {
+  document.getElementById('error-alert').classList.add('d-none');
+  document.getElementById('error-message').textContent = '';
+}
+
+function wait(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 function escapeHtml(str) {

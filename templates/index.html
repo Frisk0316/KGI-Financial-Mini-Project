@@ -36,6 +36,17 @@
     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
   </div>
 
+  <div class="card mb-4 shadow-sm">
+    <div class="card-header bg-white fw-semibold">
+      <span class="badge bg-secondary me-2">0</span>Trainer Context
+    </div>
+    <div class="card-body">
+      <label for="trainer-id" class="form-label">Trainer ID</label>
+      <input type="text" id="trainer-id" class="form-control" value="trainer_001" maxlength="64" />
+      <div class="form-text">用於模擬文件 owner 與存取隔離，僅接受英數字、底線與連字號。</div>
+    </div>
+  </div>
+
   <!-- ===== Step 1: Upload ===== -->
   <div class="card mb-4 shadow-sm">
     <div class="card-header bg-white fw-semibold">
@@ -97,6 +108,16 @@
     </button>
   </div>
 
+  <div id="job-status-card" class="card mb-4 shadow-sm d-none">
+    <div class="card-header bg-white fw-semibold">
+      <i class="bi bi-activity me-2"></i>Generation Job Status
+    </div>
+    <div class="card-body">
+      <div id="job-status-badge" class="badge text-bg-secondary mb-2">Queued</div>
+      <div id="job-status-message" class="small text-muted">等待送出生成任務。</div>
+    </div>
+  </div>
+
   <!-- ===== Split-Screen Preview ===== -->
   <div id="split-screen" class="d-none">
     <hr />
@@ -108,7 +129,7 @@
       <!-- Left: raw text -->
       <div class="col-md-6">
         <div class="split-panel-header">
-          <i class="bi bi-file-text me-1"></i>原始文件內容
+          <i class="bi bi-shield-lock me-1"></i>去識別化文件預覽
         </div>
         <pre id="raw-text-panel" class="split-pane raw-text-panel"></pre>
       </div>

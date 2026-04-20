@@ -1,9 +1,9 @@
 import json
 import os
-import re
 
 
 DEFAULT_MODEL = 'gpt-5.4-mini'
+TARGET_READING_TIME_MINUTES = 2.0
 
 SYSTEM_PROMPT = (
     'You are an expert instructional designer for a financial services micro-learning platform. '
@@ -65,6 +65,7 @@ def validate_micro_modules_payload(payload: dict) -> dict:
         raise ValueError('The AI response must include at least one module.')
 
     validated_modules = []
+    seen_sequence_orders = set()
     for index, module in enumerate(modules, start=1):
         if not isinstance(module, dict):
             raise ValueError(f'Module #{index} must be an object.')
@@ -85,20 +86,28 @@ def validate_micro_modules_payload(payload: dict) -> dict:
         except (TypeError, ValueError) as exc:
             raise ValueError(f'Module #{index} has an invalid sequence_order.') from exc
 
+        if sequence_order <= 0:
+            raise ValueError(f'Module #{index} must use a positive sequence_order.')
+        if sequence_order in seen_sequence_orders:
+            raise ValueError(f'Module #{index} reuses sequence_order {sequence_order}.')
+        seen_sequence_orders.add(sequence_order)
+
         try:
             reading_time = float(reading_time)
         except (TypeError, ValueError) as exc:
             raise ValueError(f'Module #{index} has an invalid reading_time_minutes.') from exc
 
-        if reading_time <= 0:
-            raise ValueError(f'Module #{index} must have a positive reading_time_minutes value.')
+        if reading_time < 1 or reading_time > 3:
+            raise ValueError(
+                f'Module #{index} must keep reading_time_minutes within the 2-minute sprint range (1-3 minutes).'
+            )
 
         validated_modules.append({
             'sequence_order': sequence_order,
             'title': title,
             'content': content,
             'key_takeaway': key_takeaway,
-            'reading_time_minutes': reading_time,
+            'reading_time_minutes': TARGET_READING_TIME_MINUTES,
         })
 
     summary = str(payload.get('document_summary', '')).strip()
@@ -133,8 +142,9 @@ Requirements:
 - Keep the content faithful to the source text.
 - Use clear, professional language for financial services staff.
 - Emphasize practical application for the selected domains: {domains_str}.
+- Do not expose personal data directly; generalize sensitive examples when necessary.
 - Split the material into coherent modules.
-- Each module should target about 2 minutes of reading time.
+- Each module should target about 2 minutes of reading time and report reading_time_minutes within 1-3.
 - Produce concise titles and one key takeaway per module.
 - Return the selected domains exactly as provided.
 

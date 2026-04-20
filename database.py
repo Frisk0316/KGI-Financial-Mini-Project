@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 
@@ -34,6 +35,19 @@ CREATE TABLE IF NOT EXISTS MicroModules (
     reading_time_minutes REAL DEFAULT 2.0,
     sequence_order       INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS GenerationJobs (
+    job_id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id                 INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    trainer_id             TEXT NOT NULL,
+    status                 TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+    requested_domains_json TEXT NOT NULL,
+    result_json            TEXT,
+    error_message          TEXT,
+    created_timestamp      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_timestamp      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_timestamp    DATETIME
+);
 """
 
 SEED_SQL = """
@@ -50,7 +64,7 @@ INSERT OR IGNORE INTO KnowledgeDomains (domain_name, description) VALUES
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute('PRAGMA foreign_keys = ON')
     return conn
 
 
@@ -60,56 +74,97 @@ def init_db():
         conn.executescript(SEED_SQL)
         # Migration: add key_takeaway column for existing databases
         try:
-            conn.execute("ALTER TABLE MicroModules ADD COLUMN key_takeaway TEXT")
+            conn.execute('ALTER TABLE MicroModules ADD COLUMN key_takeaway TEXT')
             conn.commit()
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
 
 
 def get_all_domains():
     with get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT domain_id, domain_name, description FROM KnowledgeDomains ORDER BY domain_name"
+            'SELECT domain_id, domain_name, description FROM KnowledgeDomains ORDER BY domain_name'
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [dict(row) for row in rows]
 
 
 def insert_document(trainer_id, file_name, raw_text):
     with get_db_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO SourceDocuments (trainer_id, file_name, raw_text) VALUES (?, ?, ?)",
-            (trainer_id, file_name, raw_text)
+            'INSERT INTO SourceDocuments (trainer_id, file_name, raw_text) VALUES (?, ?, ?)',
+            (trainer_id, file_name, raw_text),
         )
         conn.commit()
         return cur.lastrowid
 
 
+def create_generation_job(doc_id, trainer_id, domain_ids, domain_names):
+    payload = json.dumps(
+        {'domain_ids': domain_ids, 'domains': domain_names},
+        ensure_ascii=False,
+    )
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO GenerationJobs (doc_id, trainer_id, status, requested_domains_json)
+            VALUES (?, ?, 'queued', ?)
+            """,
+            (doc_id, trainer_id, payload),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def update_generation_job(job_id, status, result_payload=None, error_message=None):
+    serialized_result = None
+    if result_payload is not None:
+        serialized_result = json.dumps(result_payload, ensure_ascii=False)
+
+    completed_fragment = 'completed_timestamp = CURRENT_TIMESTAMP,' if status in {'completed', 'failed'} else ''
+    with get_db_connection() as conn:
+        conn.execute(
+            f"""
+            UPDATE GenerationJobs
+               SET status = ?,
+                   result_json = COALESCE(?, result_json),
+                   error_message = ?,
+                   {completed_fragment}
+                   updated_timestamp = CURRENT_TIMESTAMP
+             WHERE job_id = ?
+            """,
+            (status, serialized_result, error_message, job_id),
+        )
+        conn.commit()
+
+
 def replace_document_domains(conn, doc_id, domain_ids):
-    conn.execute("DELETE FROM Document_Domain_Map WHERE doc_id = ?", (doc_id,))
+    conn.execute('DELETE FROM Document_Domain_Map WHERE doc_id = ?', (doc_id,))
     if domain_ids:
         conn.executemany(
-            "INSERT INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)",
-            [(doc_id, did) for did in domain_ids]
+            'INSERT INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)',
+            [(doc_id, domain_id) for domain_id in domain_ids],
         )
 
 
 def replace_document_modules(conn, doc_id, modules):
-    conn.execute("DELETE FROM MicroModules WHERE doc_id = ?", (doc_id,))
+    conn.execute('DELETE FROM MicroModules WHERE doc_id = ?', (doc_id,))
     conn.executemany(
-        """INSERT INTO MicroModules
-           (doc_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """
+        INSERT INTO MicroModules
+            (doc_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
         [
             (
                 doc_id,
-                m.get('title', ''),
-                m.get('content', ''),
-                m.get('key_takeaway', ''),
-                m.get('reading_time_minutes', 2.0),
-                m.get('sequence_order', i + 1),
+                module.get('title', ''),
+                module.get('content', ''),
+                module.get('key_takeaway', ''),
+                module.get('reading_time_minutes', 2.0),
+                module.get('sequence_order', index + 1),
             )
-            for i, m in enumerate(modules)
-        ]
+            for index, module in enumerate(modules)
+        ],
     )
 
 
@@ -120,31 +175,74 @@ def save_generated_content(doc_id, domain_ids, modules):
         conn.commit()
 
 
-def get_document_with_modules(doc_id):
+def _fetch_document_row(conn, doc_id, trainer_id=None):
+    query = """
+        SELECT doc_id, trainer_id, file_name, raw_text, upload_timestamp
+          FROM SourceDocuments
+         WHERE doc_id = ?
+    """
+    params = [doc_id]
+    if trainer_id is not None:
+        query += ' AND trainer_id = ?'
+        params.append(trainer_id)
+    return conn.execute(query, params).fetchone()
+
+
+def get_document_with_modules(doc_id, trainer_id=None):
     with get_db_connection() as conn:
-        doc = conn.execute(
-            "SELECT doc_id, trainer_id, file_name, raw_text, upload_timestamp FROM SourceDocuments WHERE doc_id = ?",
-            (doc_id,)
-        ).fetchone()
+        doc = _fetch_document_row(conn, doc_id, trainer_id=trainer_id)
         if not doc:
             return None
 
         domains = conn.execute(
-            """SELECT kd.domain_id, kd.domain_name FROM KnowledgeDomains kd
-               JOIN Document_Domain_Map ddm ON kd.domain_id = ddm.domain_id
-               WHERE ddm.doc_id = ?
-               ORDER BY kd.domain_name""",
-            (doc_id,)
+            """
+            SELECT kd.domain_id, kd.domain_name
+              FROM KnowledgeDomains kd
+              JOIN Document_Domain_Map ddm ON kd.domain_id = ddm.domain_id
+             WHERE ddm.doc_id = ?
+             ORDER BY kd.domain_name
+            """,
+            (doc_id,),
         ).fetchall()
 
         modules = conn.execute(
-            """SELECT module_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order
-               FROM MicroModules WHERE doc_id = ? ORDER BY sequence_order""",
-            (doc_id,)
+            """
+            SELECT module_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order
+              FROM MicroModules
+             WHERE doc_id = ?
+             ORDER BY sequence_order
+            """,
+            (doc_id,),
         ).fetchall()
 
     return {
         **dict(doc),
-        'domains': [dict(d) for d in domains],
-        'modules': [dict(m) for m in modules],
+        'domains': [dict(domain) for domain in domains],
+        'modules': [dict(module) for module in modules],
     }
+
+
+def get_generation_job(job_id, trainer_id=None):
+    with get_db_connection() as conn:
+        query = """
+            SELECT job_id, doc_id, trainer_id, status, requested_domains_json, result_json,
+                   error_message, created_timestamp, updated_timestamp, completed_timestamp
+              FROM GenerationJobs
+             WHERE job_id = ?
+        """
+        params = [job_id]
+        if trainer_id is not None:
+            query += ' AND trainer_id = ?'
+            params.append(trainer_id)
+
+        row = conn.execute(query, params).fetchone()
+        if not row:
+            return None
+
+    payload = dict(row)
+    requested = json.loads(payload.pop('requested_domains_json'))
+    result_json = payload.pop('result_json')
+    payload['requested_domain_ids'] = requested.get('domain_ids', [])
+    payload['requested_domains'] = requested.get('domains', [])
+    payload['result'] = json.loads(result_json) if result_json else None
+    return payload

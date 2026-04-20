@@ -2,11 +2,35 @@ import io
 import re
 
 
+EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+TW_ID_PATTERN = re.compile(r'\b[A-Z][12]\d{8}\b')
+PHONE_PATTERN = re.compile(
+    r'\b(?:\+886[-\s]?)?(?:0?9\d{2}[-\s]?\d{3}[-\s]?\d{3}|0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{3,4})\b'
+)
+CARD_PATTERN = re.compile(r'\b(?:\d[ -]?){13,19}\b')
+
+
 def _clean_text(text: str) -> str:
     """Collapse excessive whitespace and control characters."""
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[^\S\n]+', ' ', text)
     return text.strip()
+
+
+def redact_sensitive_text(text: str) -> str:
+    """Mask common personal or sensitive identifiers before returning previews to the UI."""
+    redacted = EMAIL_PATTERN.sub('[REDACTED_EMAIL]', text)
+    redacted = TW_ID_PATTERN.sub('[REDACTED_TW_ID]', redacted)
+    redacted = PHONE_PATTERN.sub('[REDACTED_PHONE]', redacted)
+    redacted = CARD_PATTERN.sub('[REDACTED_NUMBER]', redacted)
+    return redacted
+
+
+def build_safe_preview(text: str, max_chars: int = 4000) -> str:
+    preview = redact_sensitive_text(text)
+    if len(preview) <= max_chars:
+        return preview
+    return f"{preview[:max_chars].rstrip()}\n\n...[Preview truncated for safety]..."
 
 
 def parse_pdf(file_bytes: bytes) -> str:
