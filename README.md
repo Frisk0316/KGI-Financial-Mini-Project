@@ -5,10 +5,12 @@
 本專案為凱基金融科技數位儲備幹部的開發項目，旨在解決金融業培訓中的「遺忘曲線」問題。研究顯示，員工在未經強化複習的情況下，數天內會遺忘高達 80% 的培訓內容。
 
 **Knowledge Shredder** 讓培訓人員能夠：
-1. 上傳訓練文件（PDF、DOCX、TXT）
-2. 為文件標註多個知識領域標籤（如壽險、CRM、法規遵循等）
-3. 透過 LLM 自動將長篇文件拆解為 **2 分鐘學習微模組（Sprint）**
-4. 以左右分割畫面預覽原文與 LLM 生成結果
+1. 以 `trainer_id` 模擬文件 owner 與存取隔離
+2. 上傳訓練文件（PDF、DOCX、TXT）
+3. 為文件標註多個知識領域標籤（如壽險、CRM、法規遵循等）
+4. 透過 LLM 自動將長篇文件拆解為 **2 分鐘學習微模組（Sprint）**
+5. 以背景工作建立生成任務，並輪詢 job status
+6. 以左右分割畫面預覽去識別化原文與 LLM 生成結果
 
 ## 技術架構
 
@@ -16,7 +18,7 @@
 |------|------|
 | 後端 | Python + Flask |
 | 資料庫 | SQLite |
-| 內容生成 | OpenAI Responses API + `gpt-5.4-mini` |
+| 內容生成 | OpenAI Responses API + `gpt-5.4-mini` + background job polling |
 | 文件解析 | pdfplumber、python-docx |
 | 前端 | HTML + Bootstrap 5 + Vanilla JS |
 
@@ -24,10 +26,11 @@
 
 系統使用 OpenAI 的 `gpt-5.4-mini` 搭配 structured outputs：
 
-1. 後端將文件全文與 selected domains 組成 prompt
-2. 透過 Responses API 要求模型輸出固定 JSON schema
-3. 後端驗證 `document_summary / domains / modules` 結構
-4. 驗證通過後寫回資料庫，保留文件與 domain 的關聯
+1. 上傳時以 `trainer_id` 建立文件 owner，前端只顯示去識別化 preview
+2. 後端將文件全文與 selected domains 組成 prompt，建立 generation job
+3. 背景工作呼叫 Responses API，要求模型輸出固定 JSON schema
+4. 後端驗證 `document_summary / domains / modules` 結構，並標準化 2 分鐘 sprint metadata
+5. 驗證通過後寫回資料庫，保留文件與 domain 的關聯，再由前端輪詢 job status 顯示結果
 
 預設模型是 `gpt-5.4-mini`，因為它很適合這種「明確格式、文字整理、成本敏感」的任務；若要切換模型，可在 `.env` 設定 `OPENAI_MODEL`。
 
@@ -49,6 +52,16 @@
 | Split-screen Preview：左原文、右生成結果 | 前端預覽區左側 `raw-text-panel`、右側 `sprint-panel` | 符合 |
 | 生成結果需清楚顯示 selected Domain Tags | 右側 summary header 與每張 sprint card 都會顯示 domain badges | 符合 |
 
+## 本次補強
+
+針對面試時最容易被追問的弱點，這一版額外補上：
+
+- `trainer_id` 驗證與文件 owner 隔離，避免所有 trainer 共用同一批文件
+- `GenerationJobs` 背景工作表，生成流程改為 job queue + polling
+- `domain_ids` 去重與上限控制，避免重複 tag 造成資料一致性問題
+- 去識別化 preview，遮罩 email / phone / 台灣身分證字號 / 數字序列
+- 更嚴格的 sprint 驗證，限制 `reading_time_minutes` 範圍並統一標準化成 2 分鐘
+
 補充說明：
 
 - `The Forgetting Curve...docx` 偏向商業背景與願景描述，文中提到 7 分鐘學習與 2 分鐘回憶測驗。
@@ -63,6 +76,7 @@
 - **SourceDocuments** — 來源文件表
 - **Document_Domain_Map** — 文件與領域的關聯表（Junction Table）
 - **MicroModules** — LLM 生成的微學習模組表
+- **GenerationJobs** — 背景生成任務表，用於追蹤 queued / running / completed / failed 狀態
 
 ## 快速開始
 
@@ -113,11 +127,12 @@ python app.py --port 8080 --debug
 
 ## 操作流程
 
-1. **上傳文件** — 拖放或點擊選擇 PDF / DOCX / TXT 檔案（最大 16 MB）
-2. **選擇領域標籤** — 至少選擇一個知識領域（支援多選與搜尋）
-3. **生成微模組** — 點擊「生成學習微模組」按鈕，LLM 將依 selected domains 自動拆解內容
+1. **輸入 Trainer ID** — 模擬文件 owner，後續存取與生成都會帶入相同 `trainer_id`
+2. **上傳文件** — 拖放或點擊選擇 PDF / DOCX / TXT 檔案（最大 16 MB）
+3. **選擇領域標籤** — 至少選擇一個知識領域（支援多選與搜尋）
+4. **生成微模組** — 點擊「生成學習微模組」按鈕，系統會先建立 job，再由背景工作產生 sprint
 
-生成完成後，畫面左側顯示原始文件內容，右側顯示 LLM 生成的 Sprint 卡片；每張卡片包含標題、內容、重點摘要、閱讀時間，以及本次套用的知識領域標籤。
+生成完成後，畫面左側顯示去識別化文件預覽，右側顯示 LLM 生成的 Sprint 卡片；每張卡片包含標題、內容、重點摘要、閱讀時間，以及本次套用的知識領域標籤。
 
 ## 測試方式
 
@@ -138,11 +153,14 @@ python3 -m unittest discover -s tests -q
 目前測試覆蓋的重點包含：
 
 - 重新生成時，會正確覆蓋舊的 domains 與 modules
+- 重複的 `domain_ids` 會被自動去重，不會破壞 junction table
 - LLM 回傳格式錯誤時，既有資料不會被破壞
-- `.doc` 等不支援格式會被拒絕
+- 文件預覽會遮罩常見敏感資訊
+- 不同 `trainer_id` 不能互相讀取彼此文件
 - `domain_ids` 必須是整數陣列
-- 缺少 `OPENAI_API_KEY` 時會回傳設定錯誤
+- 缺少 `OPENAI_API_KEY` 時，job 會標記為 failed 並保留錯誤原因
 - prompt 會帶入 selected domains，且回傳 domains 必須與選取內容一致
+- sprint 閱讀時間會被限制在 2 分鐘範圍內並標準化
 
 ### 手動功能測試
 
@@ -151,9 +169,10 @@ python3 -m unittest discover -s tests -q
 3. 上傳一份 `PDF`、`DOCX` 或 `TXT`
 4. 確認「生成學習微模組」按鈕在未選 domain 前不可按
 5. 搜尋並勾選一個以上 domain
-6. 點擊生成後確認左側顯示原文、右側顯示 sprint cards
-7. 確認每張 sprint card 都有顯示 domain tags、標題、內容、重點摘要與閱讀時間
-8. 重新選擇不同 domains 再生成一次，確認結果會更新
+6. 點擊生成後確認畫面出現 job status card，並從 queued / running 進入 completed
+7. 確認左側只顯示去識別化 preview，不直接暴露原始敏感資訊
+8. 確認每張 sprint card 都有顯示 domain tags、標題、內容、重點摘要與閱讀時間
+9. 切換不同 `trainer_id` 後，確認不能讀到其他 trainer 的文件
 
 ## API 路由
 
@@ -161,9 +180,10 @@ python3 -m unittest discover -s tests -q
 |--------|------|------|
 | GET | `/` | 主頁面 |
 | GET | `/api/domains` | 取得所有知識領域 |
-| POST | `/api/upload` | 上傳並解析文件 |
-| POST | `/api/generate` | 呼叫 LLM 生成微學習模組 |
-| GET | `/api/document/<id>` | 取得文件及其模組 |
+| POST | `/api/upload` | 上傳並解析文件，回傳去識別化 preview |
+| POST | `/api/generate` | 建立 generation job，由背景工作呼叫 LLM |
+| GET | `/api/jobs/<id>` | 取得 job 狀態與生成結果 |
+| GET | `/api/document/<id>` | 依 `trainer_id` 取得文件與模組 |
 
 ## 預設知識領域
 
@@ -181,8 +201,8 @@ python3 -m unittest discover -s tests -q
 ```
 ├── app.py              # Flask 應用程式 + API 路由
 ├── database.py         # SQLite 資料庫初始化與查詢
-├── file_parser.py      # PDF / DOCX / TXT 文字擷取
-├── llm.py              # OpenAI LLM 封裝與 JSON schema 驗證
+├── file_parser.py      # PDF / DOCX / TXT 文字擷取與敏感資料遮罩
+├── llm.py              # OpenAI LLM 封裝、JSON schema 驗證與 2 分鐘 sprint 標準化
 ├── requirements.txt    # Python 依賴套件
 ├── .env                # API 金鑰（不納入版控）
 ├── .env.example        # 環境變數範本
@@ -192,6 +212,7 @@ python3 -m unittest discover -s tests -q
 │   └── index.html      # 前端頁面
 ├── static/
 │   ├── css/style.css   # 自訂樣式
-│   └── js/app.js       # 前端互動邏輯
+│   └── js/app.js       # 前端互動邏輯與 job polling
+├── HARDENING_PLAN.md   # 補強企劃與弱點對照
 └── uploads/            # 上傳檔案暫存目錄
 ```
