@@ -1,12 +1,18 @@
 import io
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import app as app_module
 import database
-from llm import generate_micro_modules
+import llm
 
 
 def build_modules(title='Module A', content='Useful financial training content.'):
@@ -64,7 +70,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 502)
         payload = response.get_json()
-        self.assertIn('invalid data', payload['error'])
+        self.assertIn('invalid module data', payload['error'])
 
         saved_doc = database.get_document_with_modules(doc_id)
         self.assertEqual([domain['domain_id'] for domain in saved_doc['domains']], [2])
@@ -88,38 +94,63 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('valid integers', response.get_json()['error'])
 
-    def test_local_generator_runs_without_external_api(self):
-        doc_id = database.insert_document(
-            'trainer_001',
-            'training.txt',
-            (
-                'Customer relationship management requires consistent follow-up and clear documentation. '
-                'Teams should review each client interaction for service gaps.\n\n'
-                'Compliance reviews should verify disclosures, approvals, and record retention before any product recommendation. '
-                'Frontline staff benefit from short reminders that reinforce the required steps.'
-            ),
-        )
+    def test_generate_returns_configuration_error_when_api_key_missing(self):
+        doc_id = database.insert_document('trainer_001', 'training.txt', 'D' * 300)
 
-        response = self.client.post('/api/generate', json={'doc_id': doc_id, 'domain_ids': [3, 4]})
+        with patch.dict(os.environ, {}, clear=True):
+            response = self.client.post('/api/generate', json={'doc_id': doc_id, 'domain_ids': [3]})
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertGreaterEqual(payload['document_summary'].count('Focus areas:'), 1)
-        self.assertGreaterEqual(len(payload['modules']), 1)
-        self.assertIn('CRM', payload['modules'][0]['content'])
-        self.assertIn('Compliance', payload['modules'][0]['content'])
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('OPENAI_API_KEY', response.get_json()['error'])
 
     def test_generate_micro_modules_returns_structured_output(self):
-        result = generate_micro_modules(
-            'Estate planning often spans tax, insurance, and wealth preservation decisions.\n\n'
-            'Advisors should identify beneficiary needs, review tax exposure, and document follow-up actions.',
-            ['WealthManagement', 'TaxRegulations'],
+        mock_payload = {
+            'document_summary': 'A concise summary.',
+            'domains': ['WealthManagement', 'TaxRegulations'],
+            'total_modules': 1,
+            'modules': [
+                {
+                    'sequence_order': 1,
+                    'title': 'Estate Planning Essentials',
+                    'content': 'Review beneficiary needs, tax exposure, and follow-up actions.',
+                    'key_takeaway': 'Align wealth and tax planning with client goals.',
+                    'reading_time_minutes': 2,
+                }
+            ],
+        }
+
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}, clear=True):
+            with patch.object(llm, '_request_structured_output', return_value=mock_payload) as request_mock:
+                result = llm.generate_micro_modules(
+                    'Estate planning often spans tax, insurance, and wealth preservation decisions.',
+                    ['WealthManagement', 'TaxRegulations'],
         )
 
         self.assertEqual(result['total_modules'], len(result['modules']))
-        self.assertIn('Focus areas: WealthManagement, TaxRegulations.', result['document_summary'])
-        self.assertTrue(result['modules'][0]['title'])
-        self.assertGreater(result['modules'][0]['reading_time_minutes'], 0)
+        self.assertEqual(result['domains'], ['WealthManagement', 'TaxRegulations'])
+        self.assertEqual(request_mock.call_args.args[1], llm.DEFAULT_MODEL)
+        self.assertIn('domains: WealthManagement, TaxRegulations', request_mock.call_args.args[2])
+
+    def test_generate_micro_modules_rejects_domain_mismatch(self):
+        mismatched_payload = {
+            'document_summary': 'A concise summary.',
+            'domains': ['CRM'],
+            'total_modules': 1,
+            'modules': [
+                {
+                    'sequence_order': 1,
+                    'title': 'Client Service Basics',
+                    'content': 'Follow the documented relationship steps.',
+                    'key_takeaway': 'Stay consistent.',
+                    'reading_time_minutes': 2,
+                }
+            ],
+        }
+
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'test-key'}, clear=True):
+            with patch.object(llm, '_request_structured_output', return_value=mismatched_payload):
+                with self.assertRaises(ValueError):
+                    llm.generate_micro_modules('Sample text', ['Compliance'])
 
 
 if __name__ == '__main__':

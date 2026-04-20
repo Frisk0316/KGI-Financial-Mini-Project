@@ -181,7 +181,7 @@ function clearFile() {
 // ── Generation ───────────────────────────────────────────────────────────────
 
 async function handleGenerate() {
-  showLoading('正在整理內容並生成微模組，請稍候...');
+  showLoading('LLM 正在生成微模組，請稍候...');
 
   try {
     const res = await fetch('/api/generate', {

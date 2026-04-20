@@ -1,7 +1,7 @@
-import json
-import os
 import argparse
+import os
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
@@ -13,7 +13,9 @@ from database import (
     save_generated_content,
 )
 from file_parser import extract_text
-from llm import generate_micro_modules
+from llm import LLMConfigurationError, LLMServiceError, generate_micro_modules
+
+load_dotenv()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
@@ -140,10 +142,12 @@ def api_generate():
 
     try:
         llm_result = generate_micro_modules(doc['raw_text'], domain_names)
-    except json.JSONDecodeError:
-        return jsonify({'error': 'The module generator returned an unexpected response. Please try again.'}), 502
+    except LLMConfigurationError as exc:
+        return jsonify({'error': str(exc)}), 500
+    except LLMServiceError as exc:
+        return jsonify({'error': str(exc)}), 502
     except ValueError as exc:
-        return jsonify({'error': f'The module generator returned invalid data: {exc}'}), 502
+        return jsonify({'error': f'The AI returned invalid module data: {exc}'}), 502
 
     save_generated_content(doc_id, domain_ids, llm_result['modules'])
 

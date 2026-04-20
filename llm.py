@@ -1,13 +1,68 @@
+import json
+import os
 import re
+
+
+DEFAULT_MODEL = 'gpt-5.4-mini'
+
+SYSTEM_PROMPT = (
+    'You are an expert instructional designer for a financial services micro-learning platform. '
+    'Transform source material into concise, accurate, job-relevant learning sprints. '
+    'Return valid JSON only and strictly follow the requested schema.'
+)
+
+RESPONSE_SCHEMA = {
+    'type': 'object',
+    'additionalProperties': False,
+    'properties': {
+        'document_summary': {'type': 'string'},
+        'domains': {
+            'type': 'array',
+            'items': {'type': 'string'},
+        },
+        'total_modules': {'type': 'integer'},
+        'modules': {
+            'type': 'array',
+            'minItems': 1,
+            'items': {
+                'type': 'object',
+                'additionalProperties': False,
+                'properties': {
+                    'sequence_order': {'type': 'integer'},
+                    'title': {'type': 'string'},
+                    'content': {'type': 'string'},
+                    'key_takeaway': {'type': 'string'},
+                    'reading_time_minutes': {'type': 'number'},
+                },
+                'required': [
+                    'sequence_order',
+                    'title',
+                    'content',
+                    'key_takeaway',
+                    'reading_time_minutes',
+                ],
+            },
+        },
+    },
+    'required': ['document_summary', 'domains', 'total_modules', 'modules'],
+}
+
+
+class LLMConfigurationError(RuntimeError):
+    pass
+
+
+class LLMServiceError(RuntimeError):
+    pass
 
 
 def validate_micro_modules_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
-        raise ValueError('Generated module data must be a JSON-like object.')
+        raise ValueError('The AI response must be a JSON object.')
 
     modules = payload.get('modules')
     if not isinstance(modules, list) or not modules:
-        raise ValueError('Generated module data must include at least one module.')
+        raise ValueError('The AI response must include at least one module.')
 
     validated_modules = []
     for index, module in enumerate(modules, start=1):
@@ -51,139 +106,92 @@ def validate_micro_modules_payload(payload: dict) -> dict:
     try:
         total_modules = int(total_modules)
     except (TypeError, ValueError) as exc:
-        raise ValueError('Generated module data has an invalid total_modules value.') from exc
+        raise ValueError('The AI response has an invalid total_modules value.') from exc
 
     if total_modules != len(validated_modules):
-        raise ValueError('Generated module data total_modules does not match the module list.')
+        raise ValueError('The AI response total_modules does not match the module list.')
+
+    returned_domains = payload.get('domains', [])
+    if not isinstance(returned_domains, list):
+        raise ValueError('The AI response domains field must be an array.')
 
     return {
         'document_summary': summary,
-        'domains': payload.get('domains', []),
+        'domains': [str(domain).strip() for domain in returned_domains],
         'total_modules': total_modules,
         'modules': validated_modules,
     }
 
 
-def _clean_text(text: str) -> str:
-    text = re.sub(r'\r\n?', '\n', text)
-    text = re.sub(r'[^\S\n]+', ' ', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
+def _build_user_prompt(raw_text: str, domain_names: list[str]) -> str:
+    domains_str = ', '.join(domain_names)
+    return f"""You are creating training content for the domains: {domains_str}.
+
+Create 2-minute learning sprints from the source text below.
+
+Requirements:
+- Keep the content faithful to the source text.
+- Use clear, professional language for financial services staff.
+- Emphasize practical application for the selected domains: {domains_str}.
+- Split the material into coherent modules.
+- Each module should target about 2 minutes of reading time.
+- Produce concise titles and one key takeaway per module.
+- Return the selected domains exactly as provided.
+
+Source text:
+---
+{raw_text}
+---"""
 
 
-def _split_paragraphs(text: str) -> list[str]:
-    paragraphs = [part.strip() for part in re.split(r'\n{2,}', _clean_text(text)) if part.strip()]
-    return paragraphs
+def _request_structured_output(api_key: str, model: str, prompt: str) -> dict:
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise LLMConfigurationError(
+            'The openai package is not installed. Run "pip install -r requirements.txt".'
+        ) from exc
 
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.responses.create(
+            model=model,
+            instructions=SYSTEM_PROMPT,
+            input=prompt,
+            text={
+                'format': {
+                    'type': 'json_schema',
+                    'name': 'micro_modules',
+                    'strict': True,
+                    'schema': RESPONSE_SCHEMA,
+                }
+            },
+        )
+    except Exception as exc:
+        raise LLMServiceError(f'LLM request failed: {exc}') from exc
 
-def _split_sentences(text: str) -> list[str]:
-    normalized = re.sub(r'\s+', ' ', text).strip()
-    if not normalized:
-        return []
+    response_text = getattr(response, 'output_text', '').strip()
+    if not response_text:
+        raise LLMServiceError('LLM returned an empty response.')
 
-    parts = re.split(r'(?<=[。！？!?\.])\s+', normalized)
-    sentences = [part.strip() for part in parts if part.strip()]
-    return sentences or [normalized]
-
-
-def _measure_text_units(text: str) -> int:
-    english_words = len(re.findall(r'[A-Za-z0-9]+', text))
-    cjk_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
-    other_chars = len(re.sub(r'\s+', '', text)) - cjk_chars
-    return max(english_words + cjk_chars + max(other_chars // 6, 0), 1)
-
-
-def _chunk_paragraphs(paragraphs: list[str], target_units: int = 180, max_units: int = 260) -> list[str]:
-    if not paragraphs:
-        return []
-
-    chunks = []
-    current_parts = []
-    current_units = 0
-
-    for paragraph in paragraphs:
-        paragraph_units = _measure_text_units(paragraph)
-        would_exceed = current_parts and current_units + paragraph_units > max_units
-        close_enough = current_parts and current_units >= target_units
-
-        if would_exceed or close_enough:
-            chunks.append('\n\n'.join(current_parts))
-            current_parts = []
-            current_units = 0
-
-        current_parts.append(paragraph)
-        current_units += paragraph_units
-
-    if current_parts:
-        chunks.append('\n\n'.join(current_parts))
-
-    return chunks
-
-
-def _truncate_text(text: str, max_length: int) -> str:
-    text = re.sub(r'\s+', ' ', text).strip()
-    if len(text) <= max_length:
-        return text
-    return text[: max_length - 3].rstrip() + '...'
-
-
-def _build_document_summary(sentences: list[str], domain_names: list[str]) -> str:
-    focus = ', '.join(domain_names)
-    if not sentences:
-        return f'This module set highlights the selected domains: {focus}.'
-
-    summary_seed = ' '.join(sentences[:2])
-    summary_seed = _truncate_text(summary_seed, 180)
-    return f'{summary_seed} Focus areas: {focus}.'
-
-
-def _build_title(chunk_text: str, domain_names: list[str], index: int) -> str:
-    first_sentence = _split_sentences(chunk_text)[0] if _split_sentences(chunk_text) else ''
-    seed = re.sub(r'^[\W_]+', '', first_sentence)
-    seed = _truncate_text(seed, 42)
-    primary_domain = domain_names[0] if domain_names else f'Module {index}'
-
-    if not seed:
-        return f'{primary_domain} Sprint {index}'
-    return f'{primary_domain}: {seed}'
-
-
-def _build_takeaway(chunk_text: str, domain_names: list[str]) -> str:
-    first_sentence = _split_sentences(chunk_text)[0] if _split_sentences(chunk_text) else ''
-    focus = ', '.join(domain_names)
-    takeaway_seed = _truncate_text(first_sentence, 110) if first_sentence else 'Review the main points in this section.'
-    return f'Apply this section with focus on {focus}: {takeaway_seed}'
-
-
-def _estimate_reading_time_minutes(text: str) -> float:
-    units = _measure_text_units(text)
-    minutes = units / 140
-    return round(min(max(minutes, 1.0), 3.0), 1)
+    try:
+        return json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise LLMServiceError('LLM returned invalid JSON.') from exc
 
 
 def generate_micro_modules(raw_text: str, domain_names: list[str]) -> dict:
-    cleaned_text = _clean_text(raw_text)
-    paragraphs = _split_paragraphs(cleaned_text)
-    if not paragraphs:
-        raise ValueError('Source text does not contain enough content to build modules.')
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise LLMConfigurationError('OPENAI_API_KEY environment variable is not set.')
 
-    chunks = _chunk_paragraphs(paragraphs)
-    sentences = _split_sentences(cleaned_text)
-    modules = []
+    model = os.environ.get('OPENAI_MODEL', DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    truncated_text = raw_text[:80_000]
+    prompt = _build_user_prompt(truncated_text, domain_names)
+    payload = _request_structured_output(api_key, model, prompt)
+    validated = validate_micro_modules_payload(payload)
 
-    for index, chunk in enumerate(chunks, start=1):
-        content = f"Relevant domains: {', '.join(domain_names)}.\n\n{chunk}".strip()
-        modules.append({
-            'sequence_order': index,
-            'title': _build_title(chunk, domain_names, index),
-            'content': content,
-            'key_takeaway': _build_takeaway(chunk, domain_names),
-            'reading_time_minutes': _estimate_reading_time_minutes(content),
-        })
+    if validated['domains'] != domain_names:
+        raise ValueError('The AI response domains do not match the selected domains.')
 
-    return validate_micro_modules_payload({
-        'document_summary': _build_document_summary(sentences, domain_names),
-        'domains': domain_names,
-        'total_modules': len(modules),
-        'modules': modules,
-    })
+    return validated
