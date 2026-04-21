@@ -11,7 +11,7 @@
 <body>
   <div id="loading-overlay" class="d-none">
     <div class="spinner-border text-light mb-3" role="status" style="width: 3rem; height: 3rem;"></div>
-    <p id="loading-message" class="fs-5 text-light">Processing...</p>
+    <p id="loading-message" class="fs-5 text-light">處理中...</p>
   </div>
 
   <nav class="navbar navbar-dark bg-primary">
@@ -19,7 +19,7 @@
       <span class="navbar-brand fw-bold">
         <i class="bi bi-scissors me-2"></i>Knowledge Shredder
       </span>
-      <span class="text-white-50 small">Turn source material into 2-minute learning sprints</span>
+      <span class="text-white-50 small">把文件轉成可追溯的 2 分鐘學習卡</span>
     </div>
   </nav>
 
@@ -32,7 +32,7 @@
         <label for="trainer-id" class="form-label">Trainer ID</label>
         <input type="text" id="trainer-id" class="form-control" value="trainer_001" maxlength="64" />
         <div class="form-text">
-          Every upload and generation job is scoped to this trainer identifier.
+          每次上傳與生成都會綁定到這個 trainer 範圍。
         </div>
       </div>
     </div>
@@ -42,9 +42,9 @@
         <span class="badge bg-primary me-2">1</span>Upload Documents
       </div>
       <div class="card-body">
-        <div id="upload-zone" tabindex="0" role="button" aria-label="點擊或拖放一個以上檔案至此">
+        <div id="upload-zone" tabindex="0" role="button" aria-label="上傳文件區域">
           <i class="bi bi-cloud-arrow-up fs-1 text-secondary"></i>
-          <p class="mt-2 mb-1 fw-semibold">拖曳一個或多個檔案到這裡，或點擊選擇檔案</p>
+          <p class="mt-2 mb-1 fw-semibold">拖曳檔案到這裡，或點擊後選擇要上傳的文件</p>
           <p class="text-muted small mb-0">支援 PDF、DOCX、TXT、MD，單檔上限 16 MB</p>
           <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md" multiple class="d-none" />
         </div>
@@ -52,7 +52,7 @@
         <div id="uploaded-files-section" class="d-none mt-3">
           <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
             <button class="btn btn-sm btn-outline-secondary" id="btn-clear-all-files" type="button">
-              <i class="bi bi-trash3 me-1"></i>清除全部
+              <i class="bi bi-trash3 me-1"></i>清空全部文件
             </button>
           </div>
           <div id="uploaded-file-list" class="uploaded-file-list"></div>
@@ -66,19 +66,19 @@
       </div>
       <div class="card-body">
         <p class="text-muted small mb-3">
-          選擇一個或多個知識領域。系統會用這些 tags 引導 LLM 產生對應的訓練內容。
+          先為這批文件選擇知識標籤。兩階段流程會先整批摘要，再依照這些 tags 產出可追溯的學習卡。
         </p>
 
         <div class="input-group mb-3">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input type="text" id="domain-search" class="form-control" placeholder="搜尋領域..." />
+          <input type="text" id="domain-search" class="form-control" placeholder="搜尋 domain..." />
         </div>
 
         <div id="domain-list" class="domain-checkbox-list mb-3"></div>
         <div id="selected-tags" class="d-flex flex-wrap gap-2 mt-2"></div>
 
         <div id="domain-warning" class="text-warning small mt-2 d-none">
-          <i class="bi bi-exclamation-circle me-1"></i>請先上傳文件，並至少選擇一個 domain tag。
+          <i class="bi bi-exclamation-circle me-1"></i>請至少上傳一份文件並選擇一個 domain tag。
         </div>
 
         <div class="mt-4">
@@ -87,10 +87,10 @@
             id="custom-prompt"
             class="form-control"
             rows="4"
-            placeholder="可手動補充想要的語氣、重點、輸出角度，例如：請強調對客戶溝通的實務情境與合規提醒。"
+            placeholder="可補充你希望 AI 強調的角度，例如：請多放在客戶溝通、條列重點、稅務風險或教學語氣。"
           ></textarea>
           <div class="form-text">
-            這些指示會和你選擇的 domain tags 一起注入 LLM prompt。
+            這段內容會直接加入 OpenAI prompt，與文件摘要和 domain tags 一起送進模型。
           </div>
         </div>
       </div>
@@ -98,10 +98,9 @@
 
     <div class="d-grid mb-2">
       <button id="btn-generate" class="btn btn-primary btn-lg" disabled>
-        <i class="bi bi-lightning-charge-fill me-2"></i>Generate Learning Sprints for All Uploaded Documents
+        <i class="bi bi-lightning-charge-fill me-2"></i>Generate Integrated Learning Sprints
       </button>
     </div>
-    <div id="active-file-hint" class="d-none"></div>
 
     <div id="job-status-card" class="card mb-4 shadow-sm d-none">
       <div class="card-header bg-white fw-semibold">
@@ -109,7 +108,7 @@
       </div>
       <div class="card-body">
         <div id="job-status-badge" class="badge text-bg-secondary mb-2">Queued</div>
-        <div id="job-status-message" class="small text-muted">Waiting to start generation.</div>
+        <div id="job-status-message" class="small text-muted">等待開始產生。</div>
       </div>
     </div>
 

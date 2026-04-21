@@ -8,16 +8,18 @@ The project is designed to show a practical end-to-end workflow:
 - assign one or more business domain tags
 - optionally add a custom prompt for tone or focus
 - preview redacted source text before generation
-- generate structured learning sprints asynchronously for all uploaded documents
-- review the result side by side with the source preview
+- summarize the full uploaded batch first, then generate integrated learning sprints asynchronously
+- review the integrated result side by side with the source previews
 
 ## What It Demonstrates
 
 - Multi-document upload flow in the UI
 - Many-to-many mapping between documents and knowledge domains
+- Two-stage LLM generation: full-batch summary, then integrated module generation
 - Background job polling for LLM generation
 - Safer previews with basic masking for email, phone, Taiwan ID, and card-like numbers
 - Structured JSON output validation from the LLM
+- Traceability from generated modules back to one or more source documents
 
 ## Domain Taxonomy
 
@@ -40,8 +42,27 @@ The demo ships with seven example financial knowledge domains:
 3. Select one or more domain tags.
 4. Optionally add custom prompt instructions.
 5. Leave all uploaded files in the list, or remove any file you want to exclude.
-6. Generate learning sprints for the full uploaded set and monitor job status.
-7. Review one result block per document with its preview and generated modules.
+6. Start one batch generation job for the selected document set.
+7. The backend first summarizes all selected documents together.
+8. The backend then generates integrated modules that can reference one or more source documents.
+9. Review the final batch summary, source previews, and generated modules together.
+
+## Batch Architecture
+
+The generation pipeline now uses a two-stage batch flow:
+
+1. `Stage 1`: send all selected document text to the LLM and request a structured JSON summary for the full batch plus one summary per source file.
+2. `Stage 2`: send the stage-1 JSON summary back to the LLM and request integrated micro-modules with `source_doc_ids`.
+
+This lets the model synthesize across related files instead of treating each document in isolation.
+
+The database schema now reflects that batch-first design:
+
+- `GenerationBatches` stores one integrated generation request.
+- `Batch_Document_Map` links a batch to all selected source documents.
+- `MicroModules` stores the generated output at the batch level.
+- `Module_SourceDocument_Map` preserves many-to-many traceability from each module back to one or more documents.
+- `Document_Domain_Map` still records the many-to-many taxonomy tags applied to the selected documents.
 
 ## Tech Stack
 
@@ -111,15 +132,15 @@ Open `http://127.0.0.1:5000` in your browser.
 | `GET` | `/` | Render the web interface |
 | `GET` | `/api/domains` | Return available domain tags |
 | `POST` | `/api/upload` | Upload and parse one source document |
-| `POST` | `/api/generate` | Start generation jobs for one or more documents |
+| `POST` | `/api/generate` | Start one integrated batch-generation job for one or more documents |
 | `GET` | `/api/jobs/<job_id>` | Check background job status |
 | `GET` | `/api/document/<doc_id>` | Fetch a saved document and its generated modules |
 
 ## Notes and Limitations
 
 - The backend upload API accepts one file per request. The UI handles multiple files by uploading them sequentially.
-- The generate API accepts `doc_ids` and starts one background job per document, which keeps the many-to-many document-domain model intact.
-- The UI includes a `Custom Prompt` field, and the backend injects it into the prompt alongside the selected domains.
+- The generate API accepts `doc_ids` and starts one background job per selected document batch.
+- The UI includes a `Custom Prompt` field, and the backend injects it into both LLM prompt stages alongside the selected domains.
 - Domain tags are user-selected guidance. The `Other` tag is available when the document does not fit the predefined taxonomy.
 - Safe preview masking is intentionally lightweight and should not be treated as a full DLP solution.
 - `HARDENING_PLAN.md` is considered an internal planning document and is excluded from normal Git tracking.

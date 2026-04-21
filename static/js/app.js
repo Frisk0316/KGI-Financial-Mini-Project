@@ -23,7 +23,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function buildFriendlyError(rawMessage) {
-  const fallbackMessage = '系統處理時發生問題，請稍後再試一次。';
+  const fallbackMessage = '系統暫時無法完成這次操作，請稍後再試。';
   const technicalDetail = String(rawMessage || '').trim();
 
   if (!technicalDetail) {
@@ -34,147 +34,147 @@ function buildFriendlyError(rawMessage) {
 
   if (normalized.includes('rate limit') || normalized.includes('429') || normalized.includes('rate_limit_exceeded')) {
     return {
-      userMessage: '打給 AI 的請求數過多，系統暫時超過可用頻率，請稍後再試。',
+      userMessage: '打給 AI 的請求數過多，請稍後再試。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('failed to load available domains')) {
     return {
-      userMessage: '目前無法載入可選的領域標籤，請重新整理頁面後再試。',
+      userMessage: '目前無法載入可用的 domain tags，請稍後重新整理頁面。',
       technicalDetail: '',
     };
   }
 
   if (normalized.includes('openai_api_key')) {
     return {
-      userMessage: '系統目前沒有讀到可用的 OpenAI API Key，請先檢查 `.env` 設定。',
+      userMessage: '系統尚未設定 OpenAI API Key，請先檢查 `.env` 設定。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('connection error') || normalized.includes('timed out') || normalized.includes('timeout')) {
     return {
-      userMessage: '系統連線到 AI 服務時逾時或中斷，請稍後再試。',
+      userMessage: '連線到 AI 服務時逾時或中斷，請稍後再試。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('invalid module data') || normalized.includes('invalid json') || normalized.includes('json')) {
     return {
-      userMessage: 'AI 有回應，但回傳格式不符合系統要求，這次內容沒有成功產出。',
+      userMessage: 'AI 回傳的資料格式不符合系統預期，這次生成結果已被拒絕。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('failed to parse file')) {
     return {
-      userMessage: '檔案已上傳，但系統目前無法正確解析這份內容，請換一個檔案格式或重新匯出後再試。',
+      userMessage: '檔案內容無法正確解析，請確認檔案格式與內容是否正常。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('upload failed')) {
     return {
-      userMessage: '檔案上傳沒有成功，請稍後再試一次。',
+      userMessage: '檔案上傳失敗，請稍後再試。',
       technicalDetail,
     };
   }
 
-  if (normalized.includes('unsupported file type')) {
+  if (normalized.includes('not supported')) {
     return {
-      userMessage: '上傳的檔案格式不支援，目前只接受 PDF、DOCX、TXT 或 MD。',
-      technicalDetail: '',
+      userMessage: '這個檔案格式目前不支援，請改用 PDF、DOCX、TXT 或 MD。',
+      technicalDetail,
     };
   }
 
   if (normalized.includes('file exceeds the 16 mb upload limit')) {
     return {
-      userMessage: '檔案大小超過 16 MB 上限，請縮小檔案後再試。',
+      userMessage: '檔案大小超過 16 MB 限制，請更換較小的檔案。',
       technicalDetail: '',
     };
   }
 
   if (normalized.includes('document appears to be empty')) {
     return {
-      userMessage: '這份檔案幾乎沒有可讀文字，可能是空白檔或圖片型 PDF，請確認內容後再試。',
+      userMessage: '文件沒有足夠可擷取的文字內容，可能是空白檔或圖片型 PDF。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('no file provided')) {
     return {
-      userMessage: '這次沒有附上檔案，請重新選擇檔案後再試。',
+      userMessage: '這次請求沒有帶入檔案。',
       technicalDetail: '',
     };
   }
 
   if (normalized.includes('no file selected')) {
     return {
-      userMessage: '尚未選擇檔案，請先挑選檔案再上傳。',
+      userMessage: '尚未選擇任何檔案。',
       technicalDetail: '',
     };
   }
 
   if (normalized.includes('documents not found for this trainer')) {
     return {
-      userMessage: '找不到這位使用者上傳的文件，請重新上傳後再產生內容。',
+      userMessage: '找不到這位 trainer 對應的文件，請確認文件是否已上傳。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('job not found for this trainer')) {
     return {
-      userMessage: '找不到這筆產生任務，可能已失效或不屬於目前這位使用者。',
+      userMessage: '找不到這筆生成工作，可能已失效或 trainer 範圍不一致。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('document not found for this trainer')) {
     return {
-      userMessage: '找不到這份文件，可能已被清除或不屬於目前這位使用者。',
+      userMessage: '找不到這份文件，可能不屬於目前的 trainer。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('domain_ids')) {
     return {
-      userMessage: '領域標籤設定有誤，請重新選擇後再試一次。',
+      userMessage: '請至少選擇一個正確的 domain tag。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('unknown domain_id')) {
     return {
-      userMessage: '有些領域標籤已失效，請重新勾選後再試。',
+      userMessage: '你選到的 domain tag 不存在，請重新整理後再試。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('trainer_id')) {
     return {
-      userMessage: '使用者代碼格式不正確，請只使用英數字、底線或連字號。',
+      userMessage: 'Trainer ID 格式不正確，只能使用英數字、底線或連字號。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('request body must be json')) {
     return {
-      userMessage: '系統收到的請求格式不正確，請重新操作一次。',
+      userMessage: '送出的資料格式不是 JSON，請重新操作一次。',
       technicalDetail,
     };
   }
 
   if (normalized.includes('route not found')) {
     return {
-      userMessage: '系統目前找不到這個功能路徑，請重新整理頁面後再試。',
+      userMessage: '目前找不到對應的 API 路徑。',
       technicalDetail: '',
     };
   }
 
-  if (normalized.includes('an unexpected error occurred while generating')) {
+  if (normalized.includes('unexpected error occurred while generating')) {
     return {
-      userMessage: '產生教材時發生未預期問題，這次任務沒有完成，請稍後重試。',
+      userMessage: '生成過程中發生未預期錯誤，請稍後再試。',
       technicalDetail,
     };
   }
@@ -188,10 +188,14 @@ function buildFriendlyError(rawMessage) {
 async function loadDomains() {
   try {
     const res = await fetch('/api/domains');
-    state.allDomains = await res.json();
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to load available domains.');
+    }
+    state.allDomains = data;
     renderDomainList(state.allDomains);
-  } catch {
-    showError('Failed to load available domains.');
+  } catch (error) {
+    showError(error.message || 'Failed to load available domains.');
   }
 }
 
@@ -225,7 +229,8 @@ function renderDomainList(domains) {
       <label class="form-check-label" for="${id}">
         <span class="fw-semibold">${escapeHtml(domain.domain_name)}</span>
         <span class="text-muted small ms-1">${escapeHtml(domain.description || '')}</span>
-      </label>`;
+      </label>
+    `;
     item.querySelector('input').addEventListener('change', event => toggleDomain(domain.domain_id, event.target.checked));
     container.appendChild(item);
   });
@@ -254,17 +259,21 @@ function renderSelectedPills() {
   const container = document.getElementById('selected-tags');
   container.innerHTML = '';
 
-  state.selectedDomainIds.forEach(id => {
-    const domain = state.allDomains.find(item => item.domain_id === id);
-    if (!domain) return;
+  state.selectedDomainIds.forEach(domainId => {
+    const domain = state.allDomains.find(item => item.domain_id === domainId);
+    if (!domain) {
+      return;
+    }
 
     const pill = document.createElement('span');
     pill.className = 'badge bg-primary d-flex align-items-center gap-1 px-2 py-1';
     pill.innerHTML = `#${escapeHtml(domain.domain_name)} <button class="btn-close btn-close-white" style="font-size:.6rem;" aria-label="移除"></button>`;
     pill.querySelector('button').addEventListener('click', () => {
-      state.selectedDomainIds.delete(id);
-      const checkbox = document.getElementById(`domain-cb-${id}`);
-      if (checkbox) checkbox.checked = false;
+      state.selectedDomainIds.delete(domainId);
+      const checkbox = document.getElementById(`domain-cb-${domainId}`);
+      if (checkbox) {
+        checkbox.checked = false;
+      }
       renderSelectedPills();
       updateGenerateButtonState();
     });
@@ -304,12 +313,12 @@ function renderUploadedDocuments() {
 }
 
 function updateGenerateButtonState() {
-  const btn = document.getElementById('btn-generate');
+  const button = document.getElementById('btn-generate');
   const canGenerate = state.documents.length > 0 && state.selectedDomainIds.size > 0 && !state.isGenerating;
-  btn.disabled = !canGenerate;
+  button.disabled = !canGenerate;
 
-  const warn = document.getElementById('domain-warning');
-  warn.classList.toggle('d-none', state.documents.length > 0 && state.selectedDomainIds.size > 0);
+  const warning = document.getElementById('domain-warning');
+  warning.classList.toggle('d-none', state.documents.length > 0 && state.selectedDomainIds.size > 0);
 
   renderUploadedDocuments();
 }
@@ -325,19 +334,19 @@ function initDragDrop() {
     }
   });
 
-  ['dragenter', 'dragover'].forEach(eventName =>
+  ['dragenter', 'dragover'].forEach(eventName => {
     zone.addEventListener(eventName, event => {
       event.preventDefault();
       zone.classList.add('drag-active');
-    })
-  );
+    });
+  });
 
-  ['dragleave', 'drop'].forEach(eventName =>
+  ['dragleave', 'drop'].forEach(eventName => {
     zone.addEventListener(eventName, event => {
       event.preventDefault();
       zone.classList.remove('drag-active');
-    })
-  );
+    });
+  });
 
   zone.addEventListener('drop', async event => {
     await handleFilesUpload(event.dataTransfer.files);
@@ -353,7 +362,9 @@ function initFileInput() {
 
 async function handleFilesUpload(fileList) {
   const files = Array.from(fileList || []);
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    return;
+  }
 
   clearSplitScreen();
   clearJobStatus();
@@ -377,8 +388,8 @@ async function handleFilesUpload(fileList) {
     try {
       const payload = await uploadSingleFile(file);
       addUploadedDocument(payload);
-    } catch (err) {
-      issues.push(`${file.name}: ${err.message}`);
+    } catch (error) {
+      issues.push(`${file.name}: ${error.message}`);
     }
   }
 
@@ -422,7 +433,9 @@ function addUploadedDocument(data) {
 }
 
 function removeDocument(docId) {
-  if (state.isGenerating) return;
+  if (state.isGenerating) {
+    return;
+  }
 
   state.documents = state.documents.filter(doc => doc.doc_id !== docId);
   clearSplitScreen();
@@ -431,7 +444,9 @@ function removeDocument(docId) {
 }
 
 function clearAllFiles() {
-  if (state.isGenerating) return;
+  if (state.isGenerating) {
+    return;
+  }
 
   state.documents = [];
   state.activeJobIds = [];
@@ -448,7 +463,7 @@ async function handleGenerate() {
     return;
   }
 
-  showLoading('Generating learning sprints...');
+  showLoading('Generating integrated learning sprints...');
   hideError();
   state.isGenerating = true;
   updateGenerateButtonState();
@@ -465,21 +480,24 @@ async function handleGenerate() {
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
-    state.activeJobIds = (data.jobs || []).map(job => job.job_id);
-    showJobStatus('queued', `${state.activeJobIds.length} job(s) created. Starting generation for all uploaded documents.`);
-    hideLoading();
-
-    const jobs = await pollJobsUntilFinished(data.jobs || []);
-    const failedJob = jobs.find(job => job.status !== 'completed' || !job.result);
-    if (failedJob) {
-      throw new Error(failedJob.error_message || `Generation did not complete successfully for doc_id ${failedJob.doc_id}.`);
+    if (!res.ok) {
+      throw new Error(data.error || 'Generation failed.');
     }
 
-    renderBatchResults(jobs);
-  } catch (err) {
-    showError(err.message);
+    const jobs = data.jobs || [];
+    state.activeJobIds = jobs.map(job => job.job_id);
+    showJobStatus('queued', `已建立 ${jobs.length} 個 batch job，開始執行兩階段生成。`);
+    hideLoading();
+
+    const finalJobs = await pollJobsUntilFinished(jobs);
+    const failedJob = finalJobs.find(job => job.status !== 'completed' || !job.result);
+    if (failedJob) {
+      throw new Error(failedJob.error_message || `Generation did not complete successfully for batch ${failedJob.batch_id}.`);
+    }
+
+    renderBatchResults(finalJobs);
+  } catch (error) {
+    showError(error.message);
   } finally {
     state.isGenerating = false;
     state.activeJobIds = [];
@@ -500,7 +518,9 @@ async function pollJobsUntilFinished(jobs) {
           headers: buildApiHeaders(),
         }).then(async res => {
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error);
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to fetch job status.');
+          }
           return data;
         })
       )
@@ -517,8 +537,14 @@ async function pollJobsUntilFinished(jobs) {
     const failedCount = Array.from(finalJobs.values()).filter(job => job.status === 'failed').length;
     const runningCount = responses.filter(job => job.status === 'running').length;
     const queuedCount = responses.filter(job => job.status === 'queued').length;
+    const status = failedCount > 0
+      ? 'failed'
+      : pendingJobs.size === 0
+        ? 'completed'
+        : runningCount > 0
+          ? 'running'
+          : 'queued';
 
-    const status = failedCount > 0 ? 'failed' : pendingJobs.size === 0 ? 'completed' : runningCount > 0 ? 'running' : 'queued';
     showJobStatus(
       status,
       `Completed: ${completedCount}/${jobs.length}, Running: ${runningCount}, Queued: ${queuedCount}, Failed: ${failedCount}`
@@ -538,81 +564,107 @@ function renderBatchResults(jobs) {
   const resultsContainer = document.getElementById('results-container');
   resultsContainer.innerHTML = '';
 
-  jobs.forEach(job => {
-    const documentRecord = state.documents.find(doc => doc.doc_id === job.doc_id);
-    const previewText = documentRecord ? documentRecord.preview_text : '';
-    const result = job.result || {};
+  if (!jobs.length) {
+    return;
+  }
 
-    const block = document.createElement('section');
-    block.className = 'result-document-block';
-    block.innerHTML = `
-      <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
-        <div>
-          <div class="result-document-title fw-semibold">${escapeHtml(result.file_name || job.file_name || `Document ${job.doc_id}`)}</div>
-          <div class="text-muted small">${escapeHtml(result.document_summary || '')}</div>
-        </div>
-        <div class="d-flex flex-wrap gap-1 result-domain-pills"></div>
+  const job = jobs[0];
+  const result = job.result || {};
+  const documents = result.documents || [];
+  const modules = result.modules || [];
+  const domains = result.domains || [];
+
+  const block = document.createElement('section');
+  block.className = 'result-document-block';
+  block.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+      <div>
+        <div class="result-document-title fw-semibold">Integrated Batch Result</div>
+        <div class="text-muted small">${escapeHtml(result.document_summary || '')}</div>
       </div>
-      <div class="row g-3">
-        <div class="col-md-6">
-          <div class="split-panel-header">
-            <i class="bi bi-shield-lock me-1"></i>Safe Source Preview
-          </div>
-          <pre class="split-pane raw-text-panel">${escapeHtml(previewText)}</pre>
+      <div class="d-flex flex-wrap gap-1 result-domain-pills"></div>
+    </div>
+    <div class="row g-3">
+      <div class="col-md-5">
+        <div class="split-panel-header">
+          <i class="bi bi-journal-text me-1"></i>Batch Source Documents
         </div>
-        <div class="col-md-6">
-          <div class="split-panel-header">
-            <i class="bi bi-stars me-1"></i>Generated Learning Sprints
-          </div>
-          <div class="split-pane sprint-panel result-sprint-panel"></div>
+        <div class="split-pane sprint-panel" id="source-documents-panel"></div>
+      </div>
+      <div class="col-md-7">
+        <div class="split-panel-header">
+          <i class="bi bi-stars me-1"></i>Integrated Learning Sprints
         </div>
+        <div class="split-pane sprint-panel" id="batch-modules-panel"></div>
+      </div>
+    </div>
+  `;
+
+  const pillsContainer = block.querySelector('.result-domain-pills');
+  domains.forEach(name => {
+    const span = document.createElement('span');
+    span.className = 'badge bg-info text-dark';
+    span.textContent = `#${name}`;
+    pillsContainer.appendChild(span);
+  });
+
+  const sourcePanel = block.querySelector('#source-documents-panel');
+  documents.forEach(doc => {
+    const card = document.createElement('div');
+    card.className = 'card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center gap-2">
+        <span class="fw-semibold">${escapeHtml(doc.file_name || `Document ${doc.doc_id}`)}</span>
+        <span class="badge bg-light text-dark border">${Number(doc.char_count || 0).toLocaleString()} chars</span>
+      </div>
+      <div class="card-body">
+        <div class="small text-muted mb-2">doc_id: ${escapeHtml(doc.doc_id)}</div>
+        <pre class="raw-text-panel p-0 border-0 bg-transparent mb-0" style="height:auto;">${escapeHtml(doc.preview_text || '')}</pre>
       </div>
     `;
+    sourcePanel.appendChild(card);
+  });
 
-    const pillsContainer = block.querySelector('.result-domain-pills');
-    (result.domains || []).forEach(name => {
-      const span = document.createElement('span');
-      span.className = 'badge bg-info text-dark';
-      span.textContent = `#${name}`;
-      pillsContainer.appendChild(span);
-    });
+  const modulesPanel = block.querySelector('#batch-modules-panel');
+  modules.forEach((mod, index) => {
+    const sprintOrder = mod.sequence_order != null ? mod.sequence_order : index + 1;
+    const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
+    const domainBadges = domains.map(name =>
+      `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
+    ).join(' ');
+    const sourceBadges = (mod.source_files || []).map(name =>
+      `<span class="badge rounded-pill text-bg-light border">${escapeHtml(name)}</span>`
+    ).join(' ');
 
-    const sprintPanel = block.querySelector('.result-sprint-panel');
-    (result.modules || []).forEach((mod, index) => {
-      const sprintOrder = mod.sequence_order != null ? mod.sequence_order : index + 1;
-      const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
-      const domainBadges = (result.domains || []).map(name =>
-        `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
-      ).join(' ');
-
-      const card = document.createElement('div');
-      card.className = 'card sprint-card mb-3';
-      card.innerHTML = `
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span class="fw-semibold">
-            <span class="badge bg-secondary me-1">Sprint ${sprintOrder}</span>
-            ${escapeHtml(mod.title || '')}
-          </span>
-          <span class="badge bg-light text-dark border">
-            <i class="bi bi-clock me-1"></i>${readingTime} min
-          </span>
-        </div>
-        <div class="card-body">
-          <div class="module-domain-pills mb-3">${domainBadges}</div>
-          <p class="card-text">${escapeHtml(mod.content || '').replace(/\n/g, '<br>')}</p>
-          ${mod.key_takeaway ? `
+    const card = document.createElement('div');
+    card.className = 'card sprint-card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <span class="fw-semibold">
+          <span class="badge bg-secondary me-1">Sprint ${sprintOrder}</span>
+          ${escapeHtml(mod.title || '')}
+        </span>
+        <span class="badge bg-light text-dark border">
+          <i class="bi bi-clock me-1"></i>${readingTime} min
+        </span>
+      </div>
+      <div class="card-body">
+        <div class="module-domain-pills mb-2">${domainBadges}</div>
+        ${sourceBadges ? `<div class="module-domain-pills mb-3">${sourceBadges}</div>` : ''}
+        <p class="card-text">${renderMultilineText(mod.content || '')}</p>
+        ${mod.key_takeaway ? `
           <blockquote class="key-takeaway mb-0">
             <i class="bi bi-lightbulb-fill text-warning me-1"></i>
             <em>${escapeHtml(mod.key_takeaway)}</em>
-          </blockquote>` : ''}
-        </div>`;
-      sprintPanel.appendChild(card);
-    });
-
-    resultsContainer.appendChild(block);
+          </blockquote>
+        ` : ''}
+      </div>
+    `;
+    modulesPanel.appendChild(card);
   });
 
-  document.getElementById('summary-badge').textContent = `${jobs.length} document(s) generated`;
+  resultsContainer.appendChild(block);
+  document.getElementById('summary-badge').textContent = `${documents.length} document(s), ${modules.length} module(s)`;
   document.getElementById('split-screen').classList.remove('d-none');
   document.getElementById('split-screen').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -644,7 +696,7 @@ function clearJobStatus() {
   document.getElementById('job-status-card').classList.add('d-none');
   document.getElementById('job-status-badge').className = 'badge text-bg-secondary mb-2';
   document.getElementById('job-status-badge').textContent = 'Queued';
-  document.getElementById('job-status-message').textContent = 'Waiting to start generation.';
+  document.getElementById('job-status-message').textContent = '等待開始產生。';
 }
 
 function showLoading(message) {
@@ -680,6 +732,10 @@ function hideError() {
 
 function wait(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function renderMultilineText(text) {
+  return escapeHtml(text).replace(/\n/g, '<br>');
 }
 
 function escapeHtml(str) {

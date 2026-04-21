@@ -8,6 +8,7 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 from database import (
+    create_generation_batch,
     create_generation_job,
     get_all_domains,
     get_documents_by_ids,
@@ -19,7 +20,7 @@ from database import (
     update_generation_job,
 )
 from file_parser import build_safe_preview, extract_text
-from llm import LLMConfigurationError, LLMServiceError, generate_micro_modules
+from llm import LLMConfigurationError, LLMServiceError, generate_batch_micro_modules
 
 load_dotenv()
 
@@ -27,7 +28,7 @@ DEFAULT_TRAINER_ID = 'trainer_001'
 TRAINER_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{3,64}$')
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.config['INLINE_GENERATION_JOBS'] = False
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'md'}
 
@@ -96,7 +97,7 @@ def _normalize_domain_ids(domain_ids):
     if not normalized:
         raise ValueError('At least one domain tag must be selected before generating.')
     if len(normalized) > 20:
-        raise ValueError('A maximum of 20 domain tags can be selected per document.')
+        raise ValueError('A maximum of 20 domain tags can be selected per batch.')
 
     return normalized
 
@@ -152,23 +153,59 @@ def _serialize_document(doc):
     }
 
 
-def _build_generation_result(doc, llm_result):
+def _build_generation_result(batch_id, docs, llm_result):
+    docs_by_id = {int(doc['doc_id']): doc for doc in docs}
+    documents_payload = [
+        {
+            'doc_id': doc['doc_id'],
+            'file_name': doc['file_name'],
+            'preview_text': build_safe_preview(doc['raw_text']),
+            'char_count': len(doc['raw_text']),
+        }
+        for doc in docs
+    ]
+
+    modules_payload = []
+    for module in llm_result.get('modules', []):
+        source_doc_ids = [int(doc_id) for doc_id in module.get('source_doc_ids', [])]
+        modules_payload.append({
+            'sequence_order': module.get('sequence_order'),
+            'title': module.get('title', ''),
+            'content': module.get('content', ''),
+            'key_takeaway': module.get('key_takeaway', ''),
+            'reading_time_minutes': module.get('reading_time_minutes', 2.0),
+            'source_doc_ids': source_doc_ids,
+            'source_files': [
+                docs_by_id[doc_id]['file_name']
+                for doc_id in source_doc_ids
+                if doc_id in docs_by_id
+            ],
+        })
+
     return {
-        'doc_id': doc['doc_id'],
-        'file_name': doc['file_name'],
+        'batch_id': batch_id,
+        'doc_ids': [doc['doc_id'] for doc in docs],
+        'documents': documents_payload,
         'document_summary': llm_result.get('document_summary', ''),
         'domains': llm_result.get('domains', []),
-        'modules': llm_result.get('modules', []),
+        'modules': modules_payload,
     }
 
 
-def _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
+def _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt):
     try:
         with GENERATION_WORKER_SEMAPHORE:
             update_generation_job(job_id, 'running')
-            llm_result = generate_micro_modules(doc['raw_text'], domain_names, custom_prompt=custom_prompt)
-        save_generated_content(doc['doc_id'], domain_ids, llm_result['modules'])
-        update_generation_job(job_id, 'completed', result_payload=_build_generation_result(doc, llm_result))
+            llm_result = generate_batch_micro_modules(docs, domain_names, custom_prompt=custom_prompt)
+
+        save_generated_content(
+            batch_id,
+            [doc['doc_id'] for doc in docs],
+            domain_ids,
+            llm_result.get('document_summary', ''),
+            llm_result.get('modules', []),
+        )
+        update_generation_job(job_id, 'completed', result_payload=_build_generation_result(batch_id, docs, llm_result))
     except LLMConfigurationError as exc:
         update_generation_job(job_id, 'failed', error_message=str(exc))
     except LLMServiceError as exc:
@@ -183,54 +220,38 @@ def _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
         )
 
 
-def _start_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
+def _start_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt):
     if app.config.get('INLINE_GENERATION_JOBS'):
-        _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt)
+        _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt)
         return
 
     worker = Thread(
         target=_run_generation_job,
-        args=(job_id, doc, domain_ids, domain_names, custom_prompt),
+        args=(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt),
         daemon=True,
     )
     worker.start()
 
 
-# ---------------------------------------------------------------------------
-# Error handlers
-# ---------------------------------------------------------------------------
-
 @app.errorhandler(413)
-def too_large(_e):
+def too_large(_error):
     return jsonify({'error': 'File exceeds the 16 MB upload limit.'}), 413
 
 
 @app.errorhandler(404)
-def not_found(_e):
+def not_found(_error):
     return jsonify({'error': 'Route not found.'}), 404
 
-
-# ---------------------------------------------------------------------------
-# HTML shell
-# ---------------------------------------------------------------------------
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
 
-# ---------------------------------------------------------------------------
-# Domains
-# ---------------------------------------------------------------------------
-
 @app.route('/api/domains')
 def api_domains():
     return jsonify(get_all_domains())
 
-
-# ---------------------------------------------------------------------------
-# Upload
-# ---------------------------------------------------------------------------
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
@@ -275,10 +296,6 @@ def api_upload():
     }), 201
 
 
-# ---------------------------------------------------------------------------
-# Generate micro-modules
-# ---------------------------------------------------------------------------
-
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     data = request.get_json(silent=True)
@@ -287,20 +304,8 @@ def api_generate():
 
     try:
         trainer_id = _resolve_trainer_id(data=data)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    try:
         doc_ids = _normalize_doc_ids(data)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    try:
         domain_ids = _normalize_domain_ids(data.get('domain_ids', []))
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    try:
         custom_prompt = _normalize_custom_prompt(data.get('custom_prompt'))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -318,30 +323,24 @@ def api_generate():
         missing_doc_ids = [doc_id for doc_id in doc_ids if doc_id not in found_doc_ids]
         return jsonify({'error': f'Documents not found for this trainer: {missing_doc_ids}'}), 404
 
-    jobs = []
-    for doc in docs:
-        job_id = create_generation_job(doc['doc_id'], trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
-        _start_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt)
-        job = get_generation_job(job_id, trainer_id=trainer_id)
-        jobs.append({
-            'job_id': job_id,
-            'doc_id': doc['doc_id'],
-            'file_name': doc['file_name'],
-            'status': job['status'],
-        })
+    batch_id = create_generation_batch(doc_ids, trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
+    job_id = create_generation_job(batch_id, docs[0]['doc_id'], trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
+    _start_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt)
+    job = get_generation_job(job_id, trainer_id=trainer_id)
 
-    response_payload = {
+    return jsonify({
+        'job_id': job_id,
+        'batch_id': batch_id,
         'doc_ids': doc_ids,
         'custom_prompt': custom_prompt,
-        'jobs': jobs,
-        'total_jobs': len(jobs),
-    }
-    if len(jobs) == 1:
-        response_payload['job_id'] = jobs[0]['job_id']
-        response_payload['doc_id'] = jobs[0]['doc_id']
-        response_payload['status'] = jobs[0]['status']
-
-    return jsonify(response_payload), 202
+        'status': job['status'],
+        'jobs': [{
+            'job_id': job_id,
+            'batch_id': batch_id,
+            'status': job['status'],
+        }],
+        'total_jobs': 1,
+    }), 202
 
 
 @app.route('/api/jobs/<int:job_id>')
@@ -357,10 +356,6 @@ def api_job(job_id):
     return jsonify(job)
 
 
-# ---------------------------------------------------------------------------
-# Fetch saved document + modules
-# ---------------------------------------------------------------------------
-
 @app.route('/api/document/<int:doc_id>')
 def api_document(doc_id):
     try:
@@ -373,10 +368,6 @@ def api_document(doc_id):
         return jsonify({'error': 'Document not found for this trainer.'}), 404
     return jsonify(_serialize_document(doc))
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Knowledge Shredder development server.')

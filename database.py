@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS Batch_Document_Map (
 
 CREATE TABLE IF NOT EXISTS MicroModules (
     module_id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id               INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    doc_id               INTEGER REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
     batch_id             INTEGER REFERENCES GenerationBatches(batch_id) ON DELETE CASCADE,
     module_title         TEXT,
     module_content       TEXT NOT NULL,
@@ -317,6 +317,101 @@ def _fetch_document_row(conn, doc_id, trainer_id=None):
     return conn.execute(query, params).fetchone()
 
 
+def _fetch_latest_completed_batch_id(conn, doc_id):
+    row = conn.execute(
+        """
+        SELECT gb.batch_id
+          FROM GenerationBatches gb
+          JOIN Batch_Document_Map bdm ON gb.batch_id = bdm.batch_id
+         WHERE bdm.doc_id = ?
+           AND gb.completed_timestamp IS NOT NULL
+         ORDER BY gb.completed_timestamp DESC, gb.batch_id DESC
+         LIMIT 1
+        """,
+        (doc_id,),
+    ).fetchone()
+    return row['batch_id'] if row else None
+
+
+def _parse_csv_ints(value):
+    if not value:
+        return []
+    return [int(item) for item in str(value).split(',') if str(item).strip()]
+
+
+def _parse_csv_strings(value):
+    if not value:
+        return []
+    return [item for item in str(value).split(',') if item]
+
+
+def _fetch_modules_for_batch(conn, batch_id):
+    rows = conn.execute(
+        """
+        SELECT
+            mm.module_id,
+            mm.batch_id,
+            mm.module_title,
+            mm.module_content,
+            mm.key_takeaway,
+            mm.reading_time_minutes,
+            mm.sequence_order,
+            GROUP_CONCAT(DISTINCT msdm.doc_id) AS source_doc_ids,
+            GROUP_CONCAT(DISTINCT sd.file_name) AS source_files
+          FROM MicroModules mm
+          LEFT JOIN Module_SourceDocument_Map msdm ON mm.module_id = msdm.module_id
+          LEFT JOIN SourceDocuments sd ON msdm.doc_id = sd.doc_id
+         WHERE mm.batch_id = ?
+         GROUP BY
+            mm.module_id,
+            mm.batch_id,
+            mm.module_title,
+            mm.module_content,
+            mm.key_takeaway,
+            mm.reading_time_minutes,
+            mm.sequence_order
+         ORDER BY mm.sequence_order, mm.module_id
+        """,
+        (batch_id,),
+    ).fetchall()
+
+    modules = []
+    for row in rows:
+        module = dict(row)
+        module['source_doc_ids'] = _parse_csv_ints(module.pop('source_doc_ids'))
+        module['source_files'] = _parse_csv_strings(module.pop('source_files'))
+        modules.append(module)
+    return modules
+
+
+def _fetch_legacy_modules_for_document(conn, doc_id):
+    rows = conn.execute(
+        """
+        SELECT DISTINCT
+               mm.module_id,
+               mm.batch_id,
+               mm.module_title,
+               mm.module_content,
+               mm.key_takeaway,
+               mm.reading_time_minutes,
+               mm.sequence_order
+          FROM MicroModules mm
+         WHERE mm.doc_id = ?
+           AND mm.batch_id IS NULL
+         ORDER BY mm.sequence_order, mm.module_id
+        """,
+        (doc_id,),
+    ).fetchall()
+
+    modules = []
+    for row in rows:
+        module = dict(row)
+        module['source_doc_ids'] = [doc_id]
+        module['source_files'] = []
+        modules.append(module)
+    return modules
+
+
 def get_document_with_modules(doc_id, trainer_id=None):
     with get_db_connection() as conn:
         doc = _fetch_document_row(conn, doc_id, trainer_id=trainer_id)
@@ -334,28 +429,16 @@ def get_document_with_modules(doc_id, trainer_id=None):
             (doc_id,),
         ).fetchall()
 
-        modules = conn.execute(
-            """
-            SELECT DISTINCT
-                   mm.module_id,
-                   mm.batch_id,
-                   mm.module_title,
-                   mm.module_content,
-                   mm.key_takeaway,
-                   mm.reading_time_minutes,
-                   mm.sequence_order
-              FROM MicroModules mm
-              LEFT JOIN Module_SourceDocument_Map msdm ON mm.module_id = msdm.module_id
-             WHERE mm.doc_id = ? OR msdm.doc_id = ?
-             ORDER BY mm.sequence_order, mm.module_id
-            """,
-            (doc_id, doc_id),
-        ).fetchall()
+        latest_batch_id = _fetch_latest_completed_batch_id(conn, doc_id)
+        if latest_batch_id is not None:
+            modules = _fetch_modules_for_batch(conn, latest_batch_id)
+        else:
+            modules = _fetch_legacy_modules_for_document(conn, doc_id)
 
     return {
         **dict(doc),
         'domains': [dict(domain) for domain in domains],
-        'modules': [dict(module) for module in modules],
+        'modules': modules,
     }
 
 
