@@ -59,6 +59,10 @@ class KnowledgeShredderAppTests(unittest.TestCase):
     def api_headers(self, trainer_id='trainer_001'):
         return {'X-Trainer-Id': trainer_id}
 
+    def test_domains_include_other_tag(self):
+        domains = database.get_all_domains()
+        self.assertIn('Other', {domain['domain_name'] for domain in domains})
+
     def test_generate_creates_completed_job_and_deduplicates_domains(self):
         doc_id = database.insert_document('trainer_001', 'sample.txt', 'A' * 300)
 
@@ -167,7 +171,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(saved_doc['modules'][0]['module_title'], 'Stable Module')
 
     def test_upload_returns_redacted_preview(self):
-        source = '聯絡信箱 test@example.com，手機 0912-345-678，身分證字號 A123456789。'
+        source = '聯絡窗口 test@example.com，電話 0912-345-678，身份證字號 A123456789。'
         response = self.client.post(
             '/api/upload',
             data={'file': (io.BytesIO(source.encode('utf-8')), 'sensitive.txt'), 'trainer_id': 'trainer_red'},
@@ -324,6 +328,101 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertIn('Keep the tone practical.', result['document_summary'])
         self.assertNotEqual(result['modules'][0]['title'], 'Sprint 1')
         self.assertIn('Domains applied', result['modules'][0]['key_takeaway'])
+        self.assertIn('Application:', result['modules'][0]['content'])
+        self.assertIn('Keep the tone practical.', result['modules'][0]['content'])
+
+    def test_generate_micro_modules_returns_readable_chinese_mock_output(self):
+        with patch.dict(os.environ, {'MOCK_LLM': 'true'}, clear=True):
+            result = llm.generate_micro_modules(
+                '本文件說明客戶服務流程、法遵查核節點與保單受理注意事項，提供第一線同仁作業參考。',
+                ['CRM', 'Compliance'],
+                custom_prompt='請用實務口吻整理重點。',
+            )
+
+        self.assertIn('請用實務口吻整理重點。', result['document_summary'])
+        self.assertTrue(
+            any(
+                phrase in result['modules'][0]['title']
+                for phrase in ('客戶服務與溝通重點', '法遵要求與作業重點')
+            )
+        )
+        self.assertIn('套用領域', result['modules'][0]['key_takeaway'])
+        self.assertIn('應用：', result['modules'][0]['content'])
+        self.assertIn('請用實務口吻整理重點。', result['modules'][0]['content'])
+
+    def test_mock_output_keeps_json_structure_and_selected_domains(self):
+        with patch.dict(os.environ, {'MOCK_LLM': 'true'}, clear=True):
+            result = llm.generate_micro_modules(
+                (
+                    'Client onboarding requires a service workflow, compliance review, and policy suitability check. '
+                    'Teams must communicate the next steps clearly and record each checkpoint for follow-up. '
+                    'The document also highlights beneficiary review and document retention expectations.'
+                ),
+                ['CRM', 'Compliance', 'LifeInsurance'],
+                custom_prompt='Emphasize client follow-up actions.',
+            )
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result['domains'], ['CRM', 'Compliance', 'LifeInsurance'])
+        self.assertEqual(result['total_modules'], len(result['modules']))
+        self.assertGreaterEqual(len(result['modules']), 1)
+        self.assertTrue(all(module['reading_time_minutes'] == llm.TARGET_READING_TIME_MINUTES for module in result['modules']))
+        self.assertTrue(all(module['sequence_order'] >= 1 for module in result['modules']))
+
+    def test_request_structured_output_retries_rate_limits(self):
+        class FakeRateLimitError(Exception):
+            def __init__(self):
+                super().__init__('Rate limit reached. Please try again in 0s.')
+                self.status_code = 429
+                self.response = type('Response', (), {'headers': {'retry-after': '0'}})()
+
+        class FakeResponse:
+            output_text = (
+                '{"document_summary":"A concise summary.","domains":["CRM"],'
+                '"total_modules":1,"modules":[{"sequence_order":1,"title":"Module",'
+                '"content":"Useful training content.","key_takeaway":"Remember this.",'
+                '"reading_time_minutes":2}]}'
+            )
+
+        class FakeResponsesAPI:
+            def __init__(self):
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise FakeRateLimitError()
+                return FakeResponse()
+
+        fake_client = type('Client', (), {'responses': FakeResponsesAPI()})()
+
+        with patch.object(llm, '_create_openai_client', return_value=fake_client):
+            with patch.object(llm.time, 'sleep') as sleep_mock:
+                result = llm._request_structured_output('test-key', llm.DEFAULT_MODEL, 'prompt')
+
+        self.assertEqual(result['domains'], ['CRM'])
+        self.assertEqual(result['total_modules'], 1)
+        sleep_mock.assert_called_once()
+
+    def test_request_structured_output_raises_after_retry_budget_exhausted(self):
+        class FakeConnectionError(Exception):
+            def __init__(self):
+                super().__init__('Connection error.')
+
+        class FakeResponsesAPI:
+            def create(self, **_kwargs):
+                raise FakeConnectionError()
+
+        fake_client = type('Client', (), {'responses': FakeResponsesAPI()})()
+
+        with patch.dict(os.environ, {'OPENAI_MAX_RETRIES': '2'}, clear=False):
+            with patch.object(llm, '_create_openai_client', return_value=fake_client):
+                with patch.object(llm.time, 'sleep') as sleep_mock:
+                    with self.assertRaises(llm.LLMServiceError) as ctx:
+                        llm._request_structured_output('test-key', llm.DEFAULT_MODEL, 'prompt')
+
+        self.assertIn('after 2 attempts', str(ctx.exception))
+        self.assertEqual(sleep_mock.call_count, 1)
 
 
 if __name__ == '__main__':

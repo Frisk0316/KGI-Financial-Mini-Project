@@ -24,12 +24,6 @@
   </nav>
 
   <div class="container py-4" style="max-width: 960px;">
-    <div id="error-alert" class="alert alert-danger alert-dismissible d-none" role="alert">
-      <i class="bi bi-exclamation-triangle-fill me-2"></i>
-      <span id="error-message"></span>
-      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-
     <div class="card mb-4 shadow-sm">
       <div class="card-header bg-white fw-semibold">
         <span class="badge bg-secondary me-2">0</span>Trainer Context
@@ -126,6 +120,21 @@
         <div id="summary-badge" class="text-muted small fst-italic"></div>
       </div>
       <div id="results-container" class="d-flex flex-column gap-4"></div>
+    </div>
+
+    <div id="error-alert" class="alert alert-danger alert-dismissible d-none mt-4 shadow-sm" role="alert">
+      <div class="d-flex align-items-start gap-2">
+        <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+        <div class="flex-grow-1">
+          <div class="fw-semibold mb-1">處理時發生問題</div>
+          <div id="error-message"></div>
+          <details id="error-details" class="mt-3 d-none">
+            <summary class="small">查看技術細節</summary>
+            <pre id="error-technical-detail" class="error-technical-detail mb-0 mt-2"></pre>
+          </details>
+        </div>
+      </div>
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
   </div>
 

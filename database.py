@@ -26,9 +26,28 @@ CREATE TABLE IF NOT EXISTS Document_Domain_Map (
     UNIQUE(doc_id, domain_id)
 );
 
+CREATE TABLE IF NOT EXISTS GenerationBatches (
+    batch_id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    trainer_id              TEXT NOT NULL,
+    requested_domains_json  TEXT NOT NULL,
+    requested_custom_prompt TEXT NOT NULL DEFAULT '',
+    combined_summary        TEXT,
+    created_timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_timestamp     DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS Batch_Document_Map (
+    batch_document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id          INTEGER NOT NULL REFERENCES GenerationBatches(batch_id) ON DELETE CASCADE,
+    doc_id            INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    UNIQUE(batch_id, doc_id)
+);
+
 CREATE TABLE IF NOT EXISTS MicroModules (
     module_id            INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_id               INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    batch_id             INTEGER REFERENCES GenerationBatches(batch_id) ON DELETE CASCADE,
     module_title         TEXT,
     module_content       TEXT NOT NULL,
     key_takeaway         TEXT,
@@ -36,9 +55,17 @@ CREATE TABLE IF NOT EXISTS MicroModules (
     sequence_order       INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS Module_SourceDocument_Map (
+    map_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL REFERENCES MicroModules(module_id) ON DELETE CASCADE,
+    doc_id    INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    UNIQUE(module_id, doc_id)
+);
+
 CREATE TABLE IF NOT EXISTS GenerationJobs (
     job_id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_id                 INTEGER NOT NULL REFERENCES SourceDocuments(doc_id) ON DELETE CASCADE,
+    batch_id               INTEGER REFERENCES GenerationBatches(batch_id) ON DELETE CASCADE,
     trainer_id             TEXT NOT NULL,
     status                 TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
     requested_domains_json TEXT NOT NULL,
@@ -50,15 +77,15 @@ CREATE TABLE IF NOT EXISTS GenerationJobs (
 );
 """
 
-SEED_SQL = """
-INSERT OR IGNORE INTO KnowledgeDomains (domain_name, description) VALUES
-  ('LifeInsurance',    '定期、終身及儲蓄型壽險商品'),
-  ('InvestmentLinked', '投資型保單與基金選擇'),
-  ('CRM',              '客戶關係管理與服務策略'),
-  ('Compliance',       'FSC法規、AML、KYC及內部合規政策'),
-  ('WealthManagement', '高資產客戶規劃、投資組合與遺產規劃'),
-  ('TaxRegulations',   '保險稅務、資本利得及遺產稅處理');
-"""
+SEED_DOMAINS = [
+    ('LifeInsurance', 'Life insurance products, policy structure, beneficiaries, and coverage discussions.'),
+    ('InvestmentLinked', 'Investment-linked products, funds, asset allocation, and risk-return concepts.'),
+    ('CRM', 'Client relationship management, service follow-up, and communication quality.'),
+    ('Compliance', 'Financial compliance, AML/KYC checks, disclosures, and operating controls.'),
+    ('WealthManagement', 'Wealth planning, succession, trust topics, and broader asset management decisions.'),
+    ('TaxRegulations', 'Tax rules, filing requirements, withholding, and tax planning considerations.'),
+    ('Other', 'Use when the material does not fit the predefined financial knowledge domains.'),
+]
 
 
 def get_db_connection():
@@ -68,16 +95,31 @@ def get_db_connection():
     return conn
 
 
+def _column_exists(conn, table_name, column_name):
+    columns = conn.execute(f'PRAGMA table_info({table_name})').fetchall()
+    return any(column['name'] == column_name for column in columns)
+
+
 def init_db():
     with get_db_connection() as conn:
         conn.executescript(SCHEMA_SQL)
-        conn.executescript(SEED_SQL)
-        # Migration: add key_takeaway column for existing databases
-        try:
+        conn.executemany(
+            'INSERT OR IGNORE INTO KnowledgeDomains (domain_name, description) VALUES (?, ?)',
+            SEED_DOMAINS,
+        )
+        conn.executemany(
+            'UPDATE KnowledgeDomains SET description = ? WHERE domain_name = ?',
+            [(description, domain_name) for domain_name, description in SEED_DOMAINS],
+        )
+
+        if not _column_exists(conn, 'MicroModules', 'key_takeaway'):
             conn.execute('ALTER TABLE MicroModules ADD COLUMN key_takeaway TEXT')
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        if not _column_exists(conn, 'MicroModules', 'batch_id'):
+            conn.execute('ALTER TABLE MicroModules ADD COLUMN batch_id INTEGER REFERENCES GenerationBatches(batch_id)')
+        if not _column_exists(conn, 'GenerationJobs', 'batch_id'):
+            conn.execute('ALTER TABLE GenerationJobs ADD COLUMN batch_id INTEGER REFERENCES GenerationBatches(batch_id)')
+
+        conn.commit()
 
 
 def get_all_domains():
@@ -121,7 +163,26 @@ def get_documents_by_ids(doc_ids, trainer_id=None):
     return [rows_by_id[doc_id] for doc_id in normalized_doc_ids if doc_id in rows_by_id]
 
 
-def create_generation_job(doc_id, trainer_id, domain_ids, domain_names, custom_prompt=''):
+def create_generation_batch(doc_ids, trainer_id, domain_ids, domain_names, custom_prompt=''):
+    payload = json.dumps({'domain_ids': domain_ids, 'domains': domain_names}, ensure_ascii=False)
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO GenerationBatches (trainer_id, requested_domains_json, requested_custom_prompt)
+            VALUES (?, ?, ?)
+            """,
+            (trainer_id, payload, custom_prompt),
+        )
+        batch_id = cur.lastrowid
+        conn.executemany(
+            'INSERT INTO Batch_Document_Map (batch_id, doc_id) VALUES (?, ?)',
+            [(batch_id, int(doc_id)) for doc_id in doc_ids],
+        )
+        conn.commit()
+        return batch_id
+
+
+def create_generation_job(batch_id, primary_doc_id, trainer_id, domain_ids, domain_names, custom_prompt=''):
     payload = json.dumps(
         {'domain_ids': domain_ids, 'domains': domain_names, 'custom_prompt': custom_prompt},
         ensure_ascii=False,
@@ -129,10 +190,10 @@ def create_generation_job(doc_id, trainer_id, domain_ids, domain_names, custom_p
     with get_db_connection() as conn:
         cur = conn.execute(
             """
-            INSERT INTO GenerationJobs (doc_id, trainer_id, status, requested_domains_json)
-            VALUES (?, ?, 'queued', ?)
+            INSERT INTO GenerationJobs (doc_id, batch_id, trainer_id, status, requested_domains_json)
+            VALUES (?, ?, ?, 'queued', ?)
             """,
-            (doc_id, trainer_id, payload),
+            (primary_doc_id, batch_id, trainer_id, payload),
         )
         conn.commit()
         return cur.lastrowid
@@ -160,41 +221,86 @@ def update_generation_job(job_id, status, result_payload=None, error_message=Non
         conn.commit()
 
 
-def replace_document_domains(conn, doc_id, domain_ids):
-    conn.execute('DELETE FROM Document_Domain_Map WHERE doc_id = ?', (doc_id,))
-    if domain_ids:
-        conn.executemany(
-            'INSERT INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)',
-            [(doc_id, domain_id) for domain_id in domain_ids],
+def update_generation_batch(batch_id, combined_summary=None, completed=False):
+    summary_fragment = 'combined_summary = COALESCE(?, combined_summary),'
+    completed_fragment = 'completed_timestamp = CURRENT_TIMESTAMP,' if completed else ''
+    with get_db_connection() as conn:
+        conn.execute(
+            f"""
+            UPDATE GenerationBatches
+               SET {summary_fragment}
+                   {completed_fragment}
+                   updated_timestamp = CURRENT_TIMESTAMP
+             WHERE batch_id = ?
+            """,
+            (combined_summary, batch_id),
         )
+        conn.commit()
 
 
-def replace_document_modules(conn, doc_id, modules):
-    conn.execute('DELETE FROM MicroModules WHERE doc_id = ?', (doc_id,))
-    conn.executemany(
-        """
-        INSERT INTO MicroModules
-            (doc_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [
+def replace_document_domains(conn, doc_ids, domain_ids):
+    for doc_id in doc_ids:
+        conn.execute('DELETE FROM Document_Domain_Map WHERE doc_id = ?', (doc_id,))
+        if domain_ids:
+            conn.executemany(
+                'INSERT INTO Document_Domain_Map (doc_id, domain_id) VALUES (?, ?)',
+                [(doc_id, domain_id) for domain_id in domain_ids],
+            )
+
+
+def replace_batch_modules(conn, batch_id, fallback_doc_id, modules):
+    existing_module_ids = conn.execute(
+        'SELECT module_id FROM MicroModules WHERE batch_id = ?',
+        (batch_id,),
+    ).fetchall()
+    if existing_module_ids:
+        conn.executemany(
+            'DELETE FROM Module_SourceDocument_Map WHERE module_id = ?',
+            [(row['module_id'],) for row in existing_module_ids],
+        )
+    conn.execute('DELETE FROM MicroModules WHERE batch_id = ?', (batch_id,))
+
+    for index, module in enumerate(modules):
+        source_doc_ids = [int(doc_id) for doc_id in module.get('source_doc_ids', []) if doc_id is not None]
+        representative_doc_id = source_doc_ids[0] if source_doc_ids else fallback_doc_id
+        cur = conn.execute(
+            """
+            INSERT INTO MicroModules
+                (doc_id, batch_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
             (
-                doc_id,
+                representative_doc_id,
+                batch_id,
                 module.get('title', ''),
                 module.get('content', ''),
                 module.get('key_takeaway', ''),
                 module.get('reading_time_minutes', 2.0),
                 module.get('sequence_order', index + 1),
-            )
-            for index, module in enumerate(modules)
-        ],
-    )
+            ),
+        )
+        module_id = cur.lastrowid
+        mapped_source_doc_ids = source_doc_ids or [fallback_doc_id]
+        conn.executemany(
+            'INSERT OR IGNORE INTO Module_SourceDocument_Map (module_id, doc_id) VALUES (?, ?)',
+            [(module_id, doc_id) for doc_id in mapped_source_doc_ids],
+        )
 
 
-def save_generated_content(doc_id, domain_ids, modules):
+def save_generated_content(batch_id, doc_ids, domain_ids, batch_summary, modules):
     with get_db_connection() as conn:
-        replace_document_domains(conn, doc_id, domain_ids)
-        replace_document_modules(conn, doc_id, modules)
+        replace_document_domains(conn, doc_ids, domain_ids)
+        replace_batch_modules(conn, batch_id, int(doc_ids[0]), modules)
+        conn.execute(
+            """
+            UPDATE GenerationBatches
+               SET combined_summary = ?,
+                   completed_timestamp = CURRENT_TIMESTAMP,
+                   updated_timestamp = CURRENT_TIMESTAMP
+             WHERE batch_id = ?
+            """,
+            (batch_summary, batch_id),
+        )
         conn.commit()
 
 
@@ -230,12 +336,20 @@ def get_document_with_modules(doc_id, trainer_id=None):
 
         modules = conn.execute(
             """
-            SELECT module_id, module_title, module_content, key_takeaway, reading_time_minutes, sequence_order
-              FROM MicroModules
-             WHERE doc_id = ?
-             ORDER BY sequence_order
+            SELECT DISTINCT
+                   mm.module_id,
+                   mm.batch_id,
+                   mm.module_title,
+                   mm.module_content,
+                   mm.key_takeaway,
+                   mm.reading_time_minutes,
+                   mm.sequence_order
+              FROM MicroModules mm
+              LEFT JOIN Module_SourceDocument_Map msdm ON mm.module_id = msdm.module_id
+             WHERE mm.doc_id = ? OR msdm.doc_id = ?
+             ORDER BY mm.sequence_order, mm.module_id
             """,
-            (doc_id,),
+            (doc_id, doc_id),
         ).fetchall()
 
     return {
@@ -248,7 +362,7 @@ def get_document_with_modules(doc_id, trainer_id=None):
 def get_generation_job(job_id, trainer_id=None):
     with get_db_connection() as conn:
         query = """
-            SELECT job_id, doc_id, trainer_id, status, requested_domains_json, result_json,
+            SELECT job_id, doc_id, batch_id, trainer_id, status, requested_domains_json, result_json,
                    error_message, created_timestamp, updated_timestamp, completed_timestamp
               FROM GenerationJobs
              WHERE job_id = ?

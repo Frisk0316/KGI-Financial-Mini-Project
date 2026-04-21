@@ -21,16 +21,17 @@ The project is designed to show a practical end-to-end workflow:
 
 ## Domain Taxonomy
 
-The demo ships with six example financial knowledge domains:
+The demo ships with seven example financial knowledge domains:
 
 | Domain | Description |
 | --- | --- |
-| `CRM` | 客戶關係管理與服務策略 |
-| `Compliance` | FSC 法規、AML、KYC 及內部合規政策 |
-| `InvestmentLinked` | 投資型保單與基金選擇 |
-| `LifeInsurance` | 定期、終身及儲蓄型壽險商品 |
-| `TaxRegulations` | 保險稅務、資本利得及遺產稅處理 |
-| `WealthManagement` | 高資產客戶規劃、投資組合與遺產規劃 |
+| `CRM` | Client relationship management, service follow-up, and communication quality. |
+| `Compliance` | Financial compliance, AML/KYC checks, disclosures, and operating controls. |
+| `InvestmentLinked` | Investment-linked products, funds, asset allocation, and risk-return concepts. |
+| `LifeInsurance` | Life insurance products, policy structure, beneficiaries, and coverage discussions. |
+| `Other` | Use when the source material does not fit the predefined domain tags. |
+| `TaxRegulations` | Tax rules, filing requirements, withholding, and tax planning considerations. |
+| `WealthManagement` | Wealth planning, succession, trust topics, and broader asset management decisions. |
 
 ## Product Flow
 
@@ -79,11 +80,15 @@ Create a local `.env` file:
 OPENAI_API_KEY=your_api_key_here
 OPENAI_MODEL=gpt-5.4-mini
 MOCK_LLM=false
+OPENAI_MAX_RETRIES=4
+MAX_PARALLEL_GENERATION_WORKERS=1
 ```
 
 You can also copy `.env.example` and fill in your key.
 
 If you want to test without calling the OpenAI API, set `MOCK_LLM=true`. The app will generate deterministic local demo output that still follows the JSON schema and selected domain tags.
+
+When you generate many documents in one batch, the app now retries transient OpenAI failures such as `429 rate_limit_exceeded` and, by default, processes one LLM request at a time to reduce burst traffic. You can tune this with `OPENAI_MAX_RETRIES` and `MAX_PARALLEL_GENERATION_WORKERS`.
 
 ### 3. Start the app
 
@@ -115,7 +120,7 @@ Open `http://127.0.0.1:5000` in your browser.
 - The backend upload API accepts one file per request. The UI handles multiple files by uploading them sequentially.
 - The generate API accepts `doc_ids` and starts one background job per document, which keeps the many-to-many document-domain model intact.
 - The UI includes a `Custom Prompt` field, and the backend injects it into the prompt alongside the selected domains.
-- Domain tags are user-selected guidance. The current system does not block semantically unrelated tag selections before generation.
+- Domain tags are user-selected guidance. The `Other` tag is available when the document does not fit the predefined taxonomy.
 - Safe preview masking is intentionally lightweight and should not be treated as a full DLP solution.
 - `HARDENING_PLAN.md` is considered an internal planning document and is excluded from normal Git tracking.
 

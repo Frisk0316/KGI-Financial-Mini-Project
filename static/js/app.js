@@ -22,6 +22,169 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateGenerateButtonState();
 });
 
+function buildFriendlyError(rawMessage) {
+  const fallbackMessage = '系統處理時發生問題，請稍後再試一次。';
+  const technicalDetail = String(rawMessage || '').trim();
+
+  if (!technicalDetail) {
+    return { userMessage: fallbackMessage, technicalDetail: '' };
+  }
+
+  const normalized = technicalDetail.toLowerCase();
+
+  if (normalized.includes('rate limit') || normalized.includes('429') || normalized.includes('rate_limit_exceeded')) {
+    return {
+      userMessage: '打給 AI 的請求數過多，系統暫時超過可用頻率，請稍後再試。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('failed to load available domains')) {
+    return {
+      userMessage: '目前無法載入可選的領域標籤，請重新整理頁面後再試。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('openai_api_key')) {
+    return {
+      userMessage: '系統目前沒有讀到可用的 OpenAI API Key，請先檢查 `.env` 設定。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('connection error') || normalized.includes('timed out') || normalized.includes('timeout')) {
+    return {
+      userMessage: '系統連線到 AI 服務時逾時或中斷，請稍後再試。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('invalid module data') || normalized.includes('invalid json') || normalized.includes('json')) {
+    return {
+      userMessage: 'AI 有回應，但回傳格式不符合系統要求，這次內容沒有成功產出。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('failed to parse file')) {
+    return {
+      userMessage: '檔案已上傳，但系統目前無法正確解析這份內容，請換一個檔案格式或重新匯出後再試。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('upload failed')) {
+    return {
+      userMessage: '檔案上傳沒有成功，請稍後再試一次。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('unsupported file type')) {
+    return {
+      userMessage: '上傳的檔案格式不支援，目前只接受 PDF、DOCX、TXT 或 MD。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('file exceeds the 16 mb upload limit')) {
+    return {
+      userMessage: '檔案大小超過 16 MB 上限，請縮小檔案後再試。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('document appears to be empty')) {
+    return {
+      userMessage: '這份檔案幾乎沒有可讀文字，可能是空白檔或圖片型 PDF，請確認內容後再試。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('no file provided')) {
+    return {
+      userMessage: '這次沒有附上檔案，請重新選擇檔案後再試。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('no file selected')) {
+    return {
+      userMessage: '尚未選擇檔案，請先挑選檔案再上傳。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('documents not found for this trainer')) {
+    return {
+      userMessage: '找不到這位使用者上傳的文件，請重新上傳後再產生內容。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('job not found for this trainer')) {
+    return {
+      userMessage: '找不到這筆產生任務，可能已失效或不屬於目前這位使用者。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('document not found for this trainer')) {
+    return {
+      userMessage: '找不到這份文件，可能已被清除或不屬於目前這位使用者。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('domain_ids')) {
+    return {
+      userMessage: '領域標籤設定有誤，請重新選擇後再試一次。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('unknown domain_id')) {
+    return {
+      userMessage: '有些領域標籤已失效，請重新勾選後再試。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('trainer_id')) {
+    return {
+      userMessage: '使用者代碼格式不正確，請只使用英數字、底線或連字號。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('request body must be json')) {
+    return {
+      userMessage: '系統收到的請求格式不正確，請重新操作一次。',
+      technicalDetail,
+    };
+  }
+
+  if (normalized.includes('route not found')) {
+    return {
+      userMessage: '系統目前找不到這個功能路徑，請重新整理頁面後再試。',
+      technicalDetail: '',
+    };
+  }
+
+  if (normalized.includes('an unexpected error occurred while generating')) {
+    return {
+      userMessage: '產生教材時發生未預期問題，這次任務沒有完成，請稍後重試。',
+      technicalDetail,
+    };
+  }
+
+  return {
+    userMessage: fallbackMessage,
+    technicalDetail,
+  };
+}
+
 async function loadDomains() {
   try {
     const res = await fetch('/api/domains');
@@ -495,14 +658,24 @@ function hideLoading() {
 
 function showError(message) {
   const alert = document.getElementById('error-alert');
-  document.getElementById('error-message').textContent = message;
+  const details = document.getElementById('error-details');
+  const technicalDetail = document.getElementById('error-technical-detail');
+  const friendly = buildFriendlyError(message);
+
+  document.getElementById('error-message').textContent = friendly.userMessage;
+  technicalDetail.textContent = friendly.technicalDetail;
+  details.classList.toggle('d-none', !friendly.technicalDetail);
+  details.open = false;
   alert.classList.remove('d-none');
-  alert.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  alert.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 function hideError() {
   document.getElementById('error-alert').classList.add('d-none');
   document.getElementById('error-message').textContent = '';
+  document.getElementById('error-technical-detail').textContent = '';
+  document.getElementById('error-details').classList.add('d-none');
+  document.getElementById('error-details').open = false;
 }
 
 function wait(ms) {

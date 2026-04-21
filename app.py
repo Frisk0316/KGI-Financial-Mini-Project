@@ -1,7 +1,7 @@
 import argparse
 import os
 import re
-from threading import Thread
+from threading import Semaphore, Thread
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
@@ -36,6 +36,23 @@ UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads'
 with app.app_context():
     init_db()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+
+def _read_positive_int_env(name, default):
+    raw_value = os.environ.get(name, '').strip()
+    if not raw_value:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+
+    return parsed if parsed > 0 else default
+
+
+MAX_PARALLEL_GENERATION_WORKERS = _read_positive_int_env('MAX_PARALLEL_GENERATION_WORKERS', 1)
+GENERATION_WORKER_SEMAPHORE = Semaphore(MAX_PARALLEL_GENERATION_WORKERS)
 
 
 def _normalize_trainer_id(value):
@@ -146,9 +163,10 @@ def _build_generation_result(doc, llm_result):
 
 
 def _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
-    update_generation_job(job_id, 'running')
     try:
-        llm_result = generate_micro_modules(doc['raw_text'], domain_names, custom_prompt=custom_prompt)
+        with GENERATION_WORKER_SEMAPHORE:
+            update_generation_job(job_id, 'running')
+            llm_result = generate_micro_modules(doc['raw_text'], domain_names, custom_prompt=custom_prompt)
         save_generated_content(doc['doc_id'], domain_ids, llm_result['modules'])
         update_generation_job(job_id, 'completed', result_payload=_build_generation_result(doc, llm_result))
     except LLMConfigurationError as exc:
