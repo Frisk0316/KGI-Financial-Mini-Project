@@ -58,7 +58,7 @@ def extract_text(filename: str, file_bytes: bytes) -> str:
         return parse_pdf(file_bytes)
     elif ext == 'docx':
         return parse_docx(file_bytes)
-    elif ext == 'txt':
+    elif ext in {'txt', 'md'}:
         return parse_txt(file_bytes)
     else:
-        raise ValueError(f'Unsupported file type: .{ext}. Please upload PDF, DOCX, or TXT.')
+        raise ValueError(f'Unsupported file type: .{ext}. Please upload PDF, DOCX, TXT, or MD.')

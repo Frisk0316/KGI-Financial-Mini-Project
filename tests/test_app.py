@@ -40,7 +40,7 @@ def build_modules(
 class KnowledgeShredderAppTests(unittest.TestCase):
     def setUp(self):
         self.original_db_path = database.DB_PATH
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         database.DB_PATH = os.path.join(self.temp_dir.name, 'test.db')
         database.init_db()
         app_module.app.config['TESTING'] = True
@@ -48,9 +48,13 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.client = app_module.app.test_client()
 
     def tearDown(self):
+        self.client = None
         database.DB_PATH = self.original_db_path
         app_module.app.config['INLINE_GENERATION_JOBS'] = False
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass
 
     def api_headers(self, trainer_id='trainer_001'):
         return {'X-Trainer-Id': trainer_id}
@@ -83,6 +87,62 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual({domain['domain_id'] for domain in saved_doc['domains']}, {1, 2})
         self.assertEqual(len(saved_doc['modules']), 1)
         self.assertEqual(saved_doc['modules'][0]['module_title'], 'Updated Module')
+
+    def test_generate_multiple_documents_creates_one_job_per_document(self):
+        doc_one = database.insert_document('trainer_001', 'first.txt', 'A' * 300)
+        doc_two = database.insert_document('trainer_001', 'second.txt', 'B' * 300)
+
+        with patch.object(
+            app_module,
+            'generate_micro_modules',
+            side_effect=[
+                build_modules(title='First Module', domains=['CRM', 'Compliance']),
+                build_modules(title='Second Module', domains=['CRM', 'Compliance']),
+            ],
+        ):
+            response = self.client.post(
+                '/api/generate',
+                json={'doc_ids': [doc_one, doc_two], 'domain_ids': [3, 4], 'trainer_id': 'trainer_001'},
+                headers=self.api_headers(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertEqual(payload['total_jobs'], 2)
+        self.assertEqual([job['doc_id'] for job in payload['jobs']], [doc_one, doc_two])
+
+        first_doc = database.get_document_with_modules(doc_one, trainer_id='trainer_001')
+        second_doc = database.get_document_with_modules(doc_two, trainer_id='trainer_001')
+        self.assertEqual({domain['domain_id'] for domain in first_doc['domains']}, {3, 4})
+        self.assertEqual({domain['domain_id'] for domain in second_doc['domains']}, {3, 4})
+        self.assertEqual(first_doc['modules'][0]['module_title'], 'First Module')
+        self.assertEqual(second_doc['modules'][0]['module_title'], 'Second Module')
+
+    def test_generate_persists_custom_prompt_in_job_payload(self):
+        doc_id = database.insert_document('trainer_001', 'sample.txt', 'A' * 300)
+
+        with patch.object(
+            app_module,
+            'generate_micro_modules',
+            return_value=build_modules(title='Prompted Module', domains=['CRM']),
+        ):
+            response = self.client.post(
+                '/api/generate',
+                json={
+                    'doc_ids': [doc_id],
+                    'domain_ids': [3],
+                    'trainer_id': 'trainer_001',
+                    'custom_prompt': 'Focus on client-friendly tone.',
+                },
+                headers=self.api_headers(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        job_payload = self.client.get(
+            f"/api/jobs/{response.get_json()['job_id']}",
+            headers=self.api_headers(),
+        ).get_json()
+        self.assertEqual(job_payload['requested_custom_prompt'], 'Focus on client-friendly tone.')
 
     def test_generate_failed_job_preserves_existing_data(self):
         doc_id = database.insert_document('trainer_001', 'sample.txt', 'B' * 300)
@@ -146,6 +206,16 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('valid integers', response.get_json()['error'])
 
+    def test_generate_rejects_invalid_doc_ids(self):
+        response = self.client.post(
+            '/api/generate',
+            json={'doc_ids': ['bad-id'], 'domain_ids': [1], 'trainer_id': 'trainer_001'},
+            headers=self.api_headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('doc_ids', response.get_json()['error'])
+
     def test_generate_returns_failed_job_when_api_key_missing(self):
         doc_id = database.insert_document('trainer_001', 'training.txt', 'E' * 300)
 
@@ -176,6 +246,19 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('trainer_id', response.get_json()['error'])
 
+    def test_upload_accepts_markdown_files(self):
+        source = '# Sample\n\nThis markdown file contains enough content to pass the parser threshold for upload.'
+        response = self.client.post(
+            '/api/upload',
+            data={'file': (io.BytesIO(source.encode('utf-8')), 'notes.md'), 'trainer_id': 'trainer_md'},
+            content_type='multipart/form-data',
+            headers=self.api_headers('trainer_md'),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual(payload['file_name'], 'notes.md')
+
     def test_generate_micro_modules_returns_structured_output(self):
         mock_payload = {
             'document_summary': 'A concise summary.',
@@ -197,6 +280,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
                 result = llm.generate_micro_modules(
                     'Estate planning often spans tax, insurance, and wealth preservation decisions.',
                     ['WealthManagement', 'TaxRegulations'],
+                    custom_prompt='Highlight client communication priorities.',
                 )
 
         self.assertEqual(result['total_modules'], len(result['modules']))
@@ -204,6 +288,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(result['modules'][0]['reading_time_minutes'], llm.TARGET_READING_TIME_MINUTES)
         self.assertEqual(request_mock.call_args.args[1], llm.DEFAULT_MODEL)
         self.assertIn('domains: WealthManagement, TaxRegulations', request_mock.call_args.args[2])
+        self.assertIn('Highlight client communication priorities.', request_mock.call_args.args[2])
 
     def test_generate_micro_modules_rejects_domain_mismatch(self):
         mismatched_payload = {
@@ -225,6 +310,20 @@ class KnowledgeShredderAppTests(unittest.TestCase):
             with patch.object(llm, '_request_structured_output', return_value=mismatched_payload):
                 with self.assertRaises(ValueError):
                     llm.generate_micro_modules('Sample text', ['Compliance'])
+
+    def test_generate_micro_modules_supports_mock_mode_without_api_key(self):
+        with patch.dict(os.environ, {'MOCK_LLM': 'true'}, clear=True):
+            result = llm.generate_micro_modules(
+                'This document explains treasury operations, customer servicing workflows, and control checkpoints.',
+                ['CRM', 'Compliance'],
+                custom_prompt='Keep the tone practical.',
+            )
+
+        self.assertEqual(result['domains'], ['CRM', 'Compliance'])
+        self.assertGreaterEqual(len(result['modules']), 1)
+        self.assertIn('Keep the tone practical.', result['document_summary'])
+        self.assertNotEqual(result['modules'][0]['title'], 'Sprint 1')
+        self.assertIn('Domains applied', result['modules'][0]['key_takeaway'])
 
 
 if __name__ == '__main__':

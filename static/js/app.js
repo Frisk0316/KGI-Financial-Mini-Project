@@ -1,27 +1,24 @@
-/* =========================================================
-   Knowledge Shredder — Frontend Logic
-   ========================================================= */
-
 const state = {
-  docId: null,
-  previewText: '',
-  fileName: '',
+  documents: [],
   trainerId: 'trainer_001',
   selectedDomainIds: new Set(),
+  customPrompt: '',
   allDomains: [],
-  activeJobId: null,
+  activeJobIds: [],
   isGenerating: false,
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('trainer-id').addEventListener('input', handleTrainerIdInput);
   document.getElementById('btn-generate').addEventListener('click', handleGenerate);
-  document.getElementById('btn-clear-file').addEventListener('click', clearFile);
+  document.getElementById('btn-clear-all-files').addEventListener('click', clearAllFiles);
   document.getElementById('domain-search').addEventListener('input', filterDomains);
+  document.getElementById('custom-prompt').addEventListener('input', handleCustomPromptInput);
 
   await loadDomains();
   initDragDrop();
   initFileInput();
+  renderUploadedDocuments();
   updateGenerateButtonState();
 });
 
@@ -31,12 +28,16 @@ async function loadDomains() {
     state.allDomains = await res.json();
     renderDomainList(state.allDomains);
   } catch {
-    showError('無法載入領域標籤，請重新整理頁面。');
+    showError('Failed to load available domains.');
   }
 }
 
 function handleTrainerIdInput(event) {
   state.trainerId = event.target.value.trim() || 'trainer_001';
+}
+
+function handleCustomPromptInput(event) {
+  state.customPrompt = event.target.value;
 }
 
 function buildApiHeaders(extraHeaders = {}) {
@@ -49,6 +50,7 @@ function buildApiHeaders(extraHeaders = {}) {
 function renderDomainList(domains) {
   const container = document.getElementById('domain-list');
   container.innerHTML = '';
+
   domains.forEach(domain => {
     const id = `domain-cb-${domain.domain_id}`;
     const checked = state.selectedDomainIds.has(domain.domain_id);
@@ -58,8 +60,8 @@ function renderDomainList(domains) {
     item.innerHTML = `
       <input class="form-check-input" type="checkbox" id="${id}" value="${domain.domain_id}" ${checked ? 'checked' : ''}>
       <label class="form-check-label" for="${id}">
-        <span class="fw-semibold">${domain.domain_name}</span>
-        <span class="text-muted small ms-1">— ${domain.description}</span>
+        <span class="fw-semibold">${escapeHtml(domain.domain_name)}</span>
+        <span class="text-muted small ms-1">${escapeHtml(domain.description || '')}</span>
       </label>`;
     item.querySelector('input').addEventListener('change', event => toggleDomain(domain.domain_id, event.target.checked));
     container.appendChild(item);
@@ -80,6 +82,7 @@ function toggleDomain(domainId, checked) {
   } else {
     state.selectedDomainIds.delete(domainId);
   }
+
   renderSelectedPills();
   updateGenerateButtonState();
 }
@@ -87,12 +90,14 @@ function toggleDomain(domainId, checked) {
 function renderSelectedPills() {
   const container = document.getElementById('selected-tags');
   container.innerHTML = '';
+
   state.selectedDomainIds.forEach(id => {
     const domain = state.allDomains.find(item => item.domain_id === id);
     if (!domain) return;
+
     const pill = document.createElement('span');
     pill.className = 'badge bg-primary d-flex align-items-center gap-1 px-2 py-1';
-    pill.innerHTML = `#${domain.domain_name} <button class="btn-close btn-close-white" style="font-size:.6rem;" aria-label="移除"></button>`;
+    pill.innerHTML = `#${escapeHtml(domain.domain_name)} <button class="btn-close btn-close-white" style="font-size:.6rem;" aria-label="移除"></button>`;
     pill.querySelector('button').addEventListener('click', () => {
       state.selectedDomainIds.delete(id);
       const checkbox = document.getElementById(`domain-cb-${id}`);
@@ -104,21 +109,56 @@ function renderSelectedPills() {
   });
 }
 
+function renderUploadedDocuments() {
+  const section = document.getElementById('uploaded-files-section');
+  const list = document.getElementById('uploaded-file-list');
+
+  list.innerHTML = '';
+
+  state.documents.forEach(doc => {
+    const item = document.createElement('div');
+    item.className = 'uploaded-file-item';
+    item.innerHTML = `
+      <div class="uploaded-file-meta">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <span class="fw-semibold">${escapeHtml(doc.file_name)}</span>
+        </div>
+        <div class="text-muted small">${Number(doc.char_count || 0).toLocaleString()} chars</div>
+      </div>
+      <div class="uploaded-file-actions">
+        <button type="button" class="btn btn-sm btn-outline-secondary btn-remove-doc" ${state.isGenerating ? 'disabled' : ''}>Remove</button>
+      </div>
+    `;
+
+    item.querySelector('.btn-remove-doc').addEventListener('click', () => removeDocument(doc.doc_id));
+    list.appendChild(item);
+  });
+
+  section.classList.toggle('d-none', state.documents.length === 0);
+
+  const clearAllButton = document.getElementById('btn-clear-all-files');
+  clearAllButton.disabled = state.documents.length === 0 || state.isGenerating;
+}
+
 function updateGenerateButtonState() {
   const btn = document.getElementById('btn-generate');
-  const canGenerate = state.docId !== null && state.selectedDomainIds.size > 0 && !state.isGenerating;
+  const canGenerate = state.documents.length > 0 && state.selectedDomainIds.size > 0 && !state.isGenerating;
   btn.disabled = !canGenerate;
 
   const warn = document.getElementById('domain-warning');
-  warn.classList.toggle('d-none', state.docId === null || state.selectedDomainIds.size > 0);
+  warn.classList.toggle('d-none', state.documents.length > 0 && state.selectedDomainIds.size > 0);
+
+  renderUploadedDocuments();
 }
 
 function initDragDrop() {
   const zone = document.getElementById('upload-zone');
-  zone.addEventListener('click', () => document.getElementById('file-input').click());
+  const fileInput = document.getElementById('file-input');
+
+  zone.addEventListener('click', () => fileInput.click());
   zone.addEventListener('keydown', event => {
     if (event.key === 'Enter' || event.key === ' ') {
-      document.getElementById('file-input').click();
+      fileInput.click();
     }
   });
 
@@ -136,79 +176,116 @@ function initDragDrop() {
     })
   );
 
-  zone.addEventListener('drop', event => {
-    const file = event.dataTransfer.files[0];
-    if (file) handleFileUpload(file);
+  zone.addEventListener('drop', async event => {
+    await handleFilesUpload(event.dataTransfer.files);
   });
 }
 
 function initFileInput() {
-  document.getElementById('file-input').addEventListener('change', event => {
-    if (event.target.files[0]) handleFileUpload(event.target.files[0]);
+  document.getElementById('file-input').addEventListener('change', async event => {
+    await handleFilesUpload(event.target.files);
+    event.target.value = '';
   });
 }
 
-async function handleFileUpload(file) {
-  const ext = file.name.split('.').pop().toLowerCase();
-  if (!['pdf', 'docx', 'txt'].includes(ext)) {
-    showError(`不支援 .${ext} 格式，請上傳 PDF、DOCX 或 TXT 檔案。`);
-    return;
-  }
+async function handleFilesUpload(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return;
 
-  showLoading('解析文件中...');
   clearSplitScreen();
   clearJobStatus();
   hideError();
 
+  const unsupportedFiles = files.filter(file => {
+    const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+    return !['pdf', 'docx', 'txt', 'md'].includes(ext);
+  });
+  const supportedFiles = files.filter(file => !unsupportedFiles.includes(file));
+  const issues = unsupportedFiles.map(file => `${file.name}: unsupported file type`);
+
+  if (supportedFiles.length === 0) {
+    showError(issues.join(' | '));
+    return;
+  }
+
+  showLoading(`Uploading ${supportedFiles.length} file(s)...`);
+
+  for (const file of supportedFiles) {
+    try {
+      const payload = await uploadSingleFile(file);
+      addUploadedDocument(payload);
+    } catch (err) {
+      issues.push(`${file.name}: ${err.message}`);
+    }
+  }
+
+  hideLoading();
+  updateGenerateButtonState();
+
+  if (issues.length > 0) {
+    showError(issues.join(' | '));
+  }
+}
+
+async function uploadSingleFile(file) {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('trainer_id', state.trainerId);
 
-  try {
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      headers: buildApiHeaders(),
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
-    state.docId = data.doc_id;
-    state.previewText = data.preview_text;
-    state.fileName = data.file_name;
-    state.trainerId = data.trainer_id;
-    document.getElementById('trainer-id').value = data.trainer_id;
-
-    document.getElementById('file-name').textContent = data.file_name;
-    document.getElementById('char-count').textContent = `${data.char_count.toLocaleString()} 字元`;
-    document.getElementById('file-info').classList.remove('d-none');
-    document.getElementById('upload-zone').classList.add('d-none');
-
-    updateGenerateButtonState();
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    hideLoading();
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Upload failed.');
   }
+  return data;
 }
 
-function clearFile() {
-  state.docId = null;
-  state.previewText = '';
-  state.fileName = '';
-  state.activeJobId = null;
-  state.isGenerating = false;
+function addUploadedDocument(data) {
+  const documentRecord = {
+    doc_id: data.doc_id,
+    trainer_id: data.trainer_id,
+    file_name: data.file_name,
+    preview_text: data.preview_text,
+    char_count: data.char_count,
+  };
 
-  document.getElementById('file-info').classList.add('d-none');
-  document.getElementById('upload-zone').classList.remove('d-none');
-  document.getElementById('file-input').value = '';
+  state.documents.push(documentRecord);
+  state.trainerId = data.trainer_id;
+  document.getElementById('trainer-id').value = data.trainer_id;
+}
+
+function removeDocument(docId) {
+  if (state.isGenerating) return;
+
+  state.documents = state.documents.filter(doc => doc.doc_id !== docId);
   clearSplitScreen();
   clearJobStatus();
   updateGenerateButtonState();
 }
 
+function clearAllFiles() {
+  if (state.isGenerating) return;
+
+  state.documents = [];
+  state.activeJobIds = [];
+  state.isGenerating = false;
+  clearSplitScreen();
+  clearJobStatus();
+  hideError();
+  updateGenerateButtonState();
+}
+
 async function handleGenerate() {
-  showLoading('正在建立生成任務...');
+  if (state.documents.length === 0) {
+    showError('Please upload at least one document before generating.');
+    return;
+  }
+
+  showLoading('Generating learning sprints...');
   hideError();
   state.isGenerating = true;
   updateGenerateButtonState();
@@ -218,115 +295,168 @@ async function handleGenerate() {
       method: 'POST',
       headers: buildApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
-        doc_id: state.docId,
+        doc_ids: state.documents.map(doc => doc.doc_id),
         trainer_id: state.trainerId,
         domain_ids: [...state.selectedDomainIds],
+        custom_prompt: state.customPrompt,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    state.activeJobId = data.job_id;
-    showJobStatus(data.status, `任務 #${data.job_id} 已建立，系統開始生成微模組。`);
+    state.activeJobIds = (data.jobs || []).map(job => job.job_id);
+    showJobStatus('queued', `${state.activeJobIds.length} job(s) created. Starting generation for all uploaded documents.`);
     hideLoading();
 
-    const job = await pollJobUntilFinished(data.job_id);
-    if (job.status !== 'completed' || !job.result) {
-      throw new Error(job.error_message || '生成任務未完成。');
+    const jobs = await pollJobsUntilFinished(data.jobs || []);
+    const failedJob = jobs.find(job => job.status !== 'completed' || !job.result);
+    if (failedJob) {
+      throw new Error(failedJob.error_message || `Generation did not complete successfully for doc_id ${failedJob.doc_id}.`);
     }
 
-    renderSplitScreen(state.previewText, job.result);
+    renderBatchResults(jobs);
   } catch (err) {
     showError(err.message);
   } finally {
     state.isGenerating = false;
+    state.activeJobIds = [];
     hideLoading();
     updateGenerateButtonState();
   }
 }
 
-async function pollJobUntilFinished(jobId) {
-  while (true) {
-    const res = await fetch(`/api/jobs/${jobId}`, {
-      headers: buildApiHeaders(),
+async function pollJobsUntilFinished(jobs) {
+  const pendingJobs = new Map((jobs || []).map(job => [job.job_id, job]));
+  const finalJobs = new Map();
+
+  while (pendingJobs.size > 0) {
+    const currentJobs = Array.from(pendingJobs.values());
+    const responses = await Promise.all(
+      currentJobs.map(job =>
+        fetch(`/api/jobs/${job.job_id}`, {
+          headers: buildApiHeaders(),
+        }).then(async res => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+          return data;
+        })
+      )
+    );
+
+    responses.forEach(job => {
+      if (job.status === 'completed' || job.status === 'failed') {
+        pendingJobs.delete(job.job_id);
+        finalJobs.set(job.job_id, job);
+      }
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
 
-    const statusMessages = {
-      queued: `任務 #${jobId} 已進入佇列，等待背景工作執行。`,
-      running: `任務 #${jobId} 正在生成中，請稍候。`,
-      completed: `任務 #${jobId} 已完成，結果如下。`,
-      failed: `任務 #${jobId} 失敗：${data.error_message || '請稍後重試。'}`,
-    };
+    const completedCount = Array.from(finalJobs.values()).filter(job => job.status === 'completed').length;
+    const failedCount = Array.from(finalJobs.values()).filter(job => job.status === 'failed').length;
+    const runningCount = responses.filter(job => job.status === 'running').length;
+    const queuedCount = responses.filter(job => job.status === 'queued').length;
 
-    showJobStatus(data.status, statusMessages[data.status] || '正在同步任務狀態。');
+    const status = failedCount > 0 ? 'failed' : pendingJobs.size === 0 ? 'completed' : runningCount > 0 ? 'running' : 'queued';
+    showJobStatus(
+      status,
+      `Completed: ${completedCount}/${jobs.length}, Running: ${runningCount}, Queued: ${queuedCount}, Failed: ${failedCount}`
+    );
 
-    if (data.status === 'completed' || data.status === 'failed') {
-      return data;
+    if (pendingJobs.size === 0) {
+      return jobs.map(job => finalJobs.get(job.job_id)).filter(Boolean);
     }
 
     await wait(1200);
   }
+
+  return [];
 }
 
-function renderSplitScreen(previewText, result) {
-  document.getElementById('raw-text-panel').textContent = previewText;
+function renderBatchResults(jobs) {
+  const resultsContainer = document.getElementById('results-container');
+  resultsContainer.innerHTML = '';
 
-  const pillsContainer = document.getElementById('domain-pills');
-  pillsContainer.innerHTML = '';
-  (result.domains || []).forEach(name => {
-    const span = document.createElement('span');
-    span.className = 'badge bg-info text-dark';
-    span.textContent = `#${name}`;
-    pillsContainer.appendChild(span);
-  });
+  jobs.forEach(job => {
+    const documentRecord = state.documents.find(doc => doc.doc_id === job.doc_id);
+    const previewText = documentRecord ? documentRecord.preview_text : '';
+    const result = job.result || {};
 
-  document.getElementById('summary-badge').textContent = result.document_summary || '';
-
-  const sprintPanel = document.getElementById('sprint-panel');
-  sprintPanel.innerHTML = '';
-  (result.modules || []).forEach((mod, index) => {
-    const sprintOrder = mod.sequence_order != null ? mod.sequence_order : index + 1;
-    const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
-    const domainBadges = (result.domains || []).map(name =>
-      `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
-    ).join(' ');
-
-    const card = document.createElement('div');
-    card.className = 'card sprint-card mb-3';
-    card.innerHTML = `
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <span class="fw-semibold">
-          <span class="badge bg-secondary me-1">Sprint ${sprintOrder}</span>
-          ${escapeHtml(mod.title || '')}
-        </span>
-        <span class="badge bg-light text-dark border">
-          <i class="bi bi-clock me-1"></i>${readingTime} min
-        </span>
+    const block = document.createElement('section');
+    block.className = 'result-document-block';
+    block.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+        <div>
+          <div class="result-document-title fw-semibold">${escapeHtml(result.file_name || job.file_name || `Document ${job.doc_id}`)}</div>
+          <div class="text-muted small">${escapeHtml(result.document_summary || '')}</div>
+        </div>
+        <div class="d-flex flex-wrap gap-1 result-domain-pills"></div>
       </div>
-      <div class="card-body">
-        <div class="module-domain-pills mb-3">${domainBadges}</div>
-        <p class="card-text">${escapeHtml(mod.content || '').replace(/\n/g, '<br>')}</p>
-        ${mod.key_takeaway ? `
-        <blockquote class="key-takeaway mb-0">
-          <i class="bi bi-lightbulb-fill text-warning me-1"></i>
-          <em>${escapeHtml(mod.key_takeaway)}</em>
-        </blockquote>` : ''}
-      </div>`;
-    sprintPanel.appendChild(card);
+      <div class="row g-3">
+        <div class="col-md-6">
+          <div class="split-panel-header">
+            <i class="bi bi-shield-lock me-1"></i>Safe Source Preview
+          </div>
+          <pre class="split-pane raw-text-panel">${escapeHtml(previewText)}</pre>
+        </div>
+        <div class="col-md-6">
+          <div class="split-panel-header">
+            <i class="bi bi-stars me-1"></i>Generated Learning Sprints
+          </div>
+          <div class="split-pane sprint-panel result-sprint-panel"></div>
+        </div>
+      </div>
+    `;
+
+    const pillsContainer = block.querySelector('.result-domain-pills');
+    (result.domains || []).forEach(name => {
+      const span = document.createElement('span');
+      span.className = 'badge bg-info text-dark';
+      span.textContent = `#${name}`;
+      pillsContainer.appendChild(span);
+    });
+
+    const sprintPanel = block.querySelector('.result-sprint-panel');
+    (result.modules || []).forEach((mod, index) => {
+      const sprintOrder = mod.sequence_order != null ? mod.sequence_order : index + 1;
+      const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
+      const domainBadges = (result.domains || []).map(name =>
+        `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
+      ).join(' ');
+
+      const card = document.createElement('div');
+      card.className = 'card sprint-card mb-3';
+      card.innerHTML = `
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span class="fw-semibold">
+            <span class="badge bg-secondary me-1">Sprint ${sprintOrder}</span>
+            ${escapeHtml(mod.title || '')}
+          </span>
+          <span class="badge bg-light text-dark border">
+            <i class="bi bi-clock me-1"></i>${readingTime} min
+          </span>
+        </div>
+        <div class="card-body">
+          <div class="module-domain-pills mb-3">${domainBadges}</div>
+          <p class="card-text">${escapeHtml(mod.content || '').replace(/\n/g, '<br>')}</p>
+          ${mod.key_takeaway ? `
+          <blockquote class="key-takeaway mb-0">
+            <i class="bi bi-lightbulb-fill text-warning me-1"></i>
+            <em>${escapeHtml(mod.key_takeaway)}</em>
+          </blockquote>` : ''}
+        </div>`;
+      sprintPanel.appendChild(card);
+    });
+
+    resultsContainer.appendChild(block);
   });
 
-  const splitScreen = document.getElementById('split-screen');
-  splitScreen.classList.remove('d-none');
-  splitScreen.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('summary-badge').textContent = `${jobs.length} document(s) generated`;
+  document.getElementById('split-screen').classList.remove('d-none');
+  document.getElementById('split-screen').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function clearSplitScreen() {
   document.getElementById('split-screen').classList.add('d-none');
-  document.getElementById('sprint-panel').innerHTML = '';
-  document.getElementById('raw-text-panel').textContent = '';
-  document.getElementById('domain-pills').innerHTML = '';
+  document.getElementById('results-container').innerHTML = '';
   document.getElementById('summary-badge').textContent = '';
 }
 
@@ -351,7 +481,7 @@ function clearJobStatus() {
   document.getElementById('job-status-card').classList.add('d-none');
   document.getElementById('job-status-badge').className = 'badge text-bg-secondary mb-2';
   document.getElementById('job-status-badge').textContent = 'Queued';
-  document.getElementById('job-status-message').textContent = '等待送出生成任務。';
+  document.getElementById('job-status-message').textContent = 'Waiting to start generation.';
 }
 
 function showLoading(message) {

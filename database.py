@@ -98,9 +98,32 @@ def insert_document(trainer_id, file_name, raw_text):
         return cur.lastrowid
 
 
-def create_generation_job(doc_id, trainer_id, domain_ids, domain_names):
+def get_documents_by_ids(doc_ids, trainer_id=None):
+    normalized_doc_ids = [int(doc_id) for doc_id in doc_ids]
+    if not normalized_doc_ids:
+        return []
+
+    placeholders = ', '.join('?' for _ in normalized_doc_ids)
+    query = f"""
+        SELECT doc_id, trainer_id, file_name, raw_text, upload_timestamp
+          FROM SourceDocuments
+         WHERE doc_id IN ({placeholders})
+    """
+    params = list(normalized_doc_ids)
+    if trainer_id is not None:
+        query += ' AND trainer_id = ?'
+        params.append(trainer_id)
+
+    with get_db_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    rows_by_id = {row['doc_id']: dict(row) for row in rows}
+    return [rows_by_id[doc_id] for doc_id in normalized_doc_ids if doc_id in rows_by_id]
+
+
+def create_generation_job(doc_id, trainer_id, domain_ids, domain_names, custom_prompt=''):
     payload = json.dumps(
-        {'domain_ids': domain_ids, 'domains': domain_names},
+        {'domain_ids': domain_ids, 'domains': domain_names, 'custom_prompt': custom_prompt},
         ensure_ascii=False,
     )
     with get_db_connection() as conn:
@@ -244,5 +267,6 @@ def get_generation_job(job_id, trainer_id=None):
     result_json = payload.pop('result_json')
     payload['requested_domain_ids'] = requested.get('domain_ids', [])
     payload['requested_domains'] = requested.get('domains', [])
+    payload['requested_custom_prompt'] = requested.get('custom_prompt', '')
     payload['result'] = json.loads(result_json) if result_json else None
     return payload

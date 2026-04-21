@@ -1,8 +1,4 @@
-/* =========================================================
-   Knowledge Shredder — Custom Styles
-   ========================================================= */
-
-/* ── Upload Zone ── */
+/* Upload zone */
 #upload-zone {
   border: 2px dashed #6c757d;
   border-radius: 12px;
@@ -12,17 +8,61 @@
   transition: border-color 0.2s ease, background-color 0.2s ease;
   outline: none;
 }
+
 #upload-zone:hover,
 #upload-zone:focus {
   border-color: #0d6efd;
   background-color: #f0f5ff;
 }
+
 #upload-zone.drag-active {
   border-color: #0d6efd;
   background-color: #e8f0fe;
 }
 
-/* ── Domain Checkbox List ── */
+.uploaded-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.uploaded-file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #dee2e6;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.uploaded-file-meta {
+  min-width: 0;
+}
+
+.uploaded-file-meta .fw-semibold {
+  word-break: break-word;
+}
+
+.uploaded-file-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.result-document-block {
+  border: 1px solid #dee2e6;
+  border-radius: 12px;
+  background: #fff;
+  padding: 1rem;
+}
+
+.result-document-title {
+  font-size: 1.1rem;
+}
+
+/* Domain list */
 .domain-checkbox-list {
   max-height: 220px;
   overflow-y: auto;
@@ -31,15 +71,17 @@
   padding: 0.5rem 0.75rem;
   background: #fff;
 }
+
 .domain-check-item {
   padding: 0.35rem 0;
   border-bottom: 1px solid #f0f0f0;
 }
+
 .domain-check-item:last-child {
   border-bottom: none;
 }
 
-/* ── Split Screen ── */
+/* Split screen */
 .split-panel-header {
   background: #f8f9fa;
   border: 1px solid #dee2e6;
@@ -59,7 +101,7 @@
 }
 
 .raw-text-panel {
-  font-family: 'Courier New', Courier, monospace;
+  font-family: "Courier New", Courier, monospace;
   font-size: 0.78rem;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -75,24 +117,28 @@
   background: #fff;
 }
 
-/* ── Sprint Cards ── */
+/* Sprint cards */
 .sprint-card {
   border-left: 4px solid #0d6efd;
   border-radius: 6px;
 }
+
 .sprint-card .card-header {
   background: #f0f5ff;
   font-size: 0.9rem;
 }
+
 .sprint-card .card-body {
   font-size: 0.88rem;
   line-height: 1.7;
 }
+
 .module-domain-pills {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
+
 .sprint-card .key-takeaway {
   border-left: 3px solid #ffc107;
   padding: 0.4rem 0.75rem;
@@ -103,7 +149,7 @@
   margin-top: 0.75rem;
 }
 
-/* ── Loading Overlay ── */
+/* Loading overlay */
 #loading-overlay {
   position: fixed;
   inset: 0;
@@ -115,11 +161,22 @@
   justify-content: center;
 }
 
-/* ── Misc ── */
+/* Misc */
 .navbar {
-  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 #job-status-card {
   border-left: 4px solid #0d6efd;
+}
+
+@media (max-width: 576px) {
+  .uploaded-file-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .uploaded-file-actions {
+    width: 100%;
+  }
 }

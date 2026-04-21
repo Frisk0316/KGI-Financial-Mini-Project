@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 from database import (
     create_generation_job,
     get_all_domains,
+    get_documents_by_ids,
     get_document_with_modules,
     get_generation_job,
     init_db,
@@ -28,7 +29,7 @@ TRAINER_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{3,64}$')
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 app.config['INLINE_GENERATION_JOBS'] = False
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'md'}
 
 UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 
@@ -83,6 +84,41 @@ def _normalize_domain_ids(domain_ids):
     return normalized
 
 
+def _normalize_custom_prompt(value):
+    custom_prompt = str(value or '').strip()
+    if len(custom_prompt) > 4000:
+        raise ValueError('custom_prompt must be 4000 characters or fewer.')
+    return custom_prompt
+
+
+def _normalize_doc_ids(data):
+    doc_ids = data.get('doc_ids')
+    if doc_ids is None:
+        doc_id = data.get('doc_id')
+        if doc_id is None:
+            raise ValueError('doc_ids is required.')
+        doc_ids = [doc_id]
+
+    if not isinstance(doc_ids, list):
+        raise ValueError('doc_ids must be an array of integers.')
+
+    normalized = []
+    seen = set()
+    try:
+        for doc_id in doc_ids:
+            parsed = int(doc_id)
+            if parsed not in seen:
+                normalized.append(parsed)
+                seen.add(parsed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('doc_ids must contain valid integers.') from exc
+
+    if not normalized:
+        raise ValueError('At least one uploaded document is required before generating.')
+
+    return normalized
+
+
 def _serialize_document(doc):
     if not doc:
         return None
@@ -99,21 +135,22 @@ def _serialize_document(doc):
     }
 
 
-def _build_generation_result(doc_id, llm_result):
+def _build_generation_result(doc, llm_result):
     return {
-        'doc_id': doc_id,
+        'doc_id': doc['doc_id'],
+        'file_name': doc['file_name'],
         'document_summary': llm_result.get('document_summary', ''),
         'domains': llm_result.get('domains', []),
         'modules': llm_result.get('modules', []),
     }
 
 
-def _run_generation_job(job_id, doc_id, domain_ids, domain_names, raw_text):
+def _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
     update_generation_job(job_id, 'running')
     try:
-        llm_result = generate_micro_modules(raw_text, domain_names)
-        save_generated_content(doc_id, domain_ids, llm_result['modules'])
-        update_generation_job(job_id, 'completed', result_payload=_build_generation_result(doc_id, llm_result))
+        llm_result = generate_micro_modules(doc['raw_text'], domain_names, custom_prompt=custom_prompt)
+        save_generated_content(doc['doc_id'], domain_ids, llm_result['modules'])
+        update_generation_job(job_id, 'completed', result_payload=_build_generation_result(doc, llm_result))
     except LLMConfigurationError as exc:
         update_generation_job(job_id, 'failed', error_message=str(exc))
     except LLMServiceError as exc:
@@ -128,14 +165,14 @@ def _run_generation_job(job_id, doc_id, domain_ids, domain_names, raw_text):
         )
 
 
-def _start_generation_job(job_id, doc_id, domain_ids, domain_names, raw_text):
+def _start_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt):
     if app.config.get('INLINE_GENERATION_JOBS'):
-        _run_generation_job(job_id, doc_id, domain_ids, domain_names, raw_text)
+        _run_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt)
         return
 
     worker = Thread(
         target=_run_generation_job,
-        args=(job_id, doc_id, domain_ids, domain_names, raw_text),
+        args=(job_id, doc, domain_ids, domain_names, custom_prompt),
         daemon=True,
     )
     worker.start()
@@ -193,7 +230,7 @@ def api_upload():
 
     ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
     if ext not in ALLOWED_EXTENSIONS:
-        return jsonify({'error': f'File type .{ext} is not supported. Please upload PDF, DOCX, or TXT.'}), 415
+        return jsonify({'error': f'File type .{ext} is not supported. Please upload PDF, DOCX, TXT, or MD.'}), 415
 
     file_bytes = file.read()
 
@@ -235,12 +272,18 @@ def api_generate():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
-    doc_id = data.get('doc_id')
-    if not doc_id:
-        return jsonify({'error': 'doc_id is required.'}), 400
+    try:
+        doc_ids = _normalize_doc_ids(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     try:
         domain_ids = _normalize_domain_ids(data.get('domain_ids', []))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    try:
+        custom_prompt = _normalize_custom_prompt(data.get('custom_prompt'))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
@@ -251,18 +294,36 @@ def api_generate():
             return jsonify({'error': f'Unknown domain_id: {domain_id}'}), 400
         domain_names.append(all_domains[domain_id])
 
-    doc = get_document_with_modules(doc_id, trainer_id=trainer_id)
-    if not doc:
-        return jsonify({'error': 'Document not found for this trainer.'}), 404
+    docs = get_documents_by_ids(doc_ids, trainer_id=trainer_id)
+    if len(docs) != len(doc_ids):
+        found_doc_ids = {doc['doc_id'] for doc in docs}
+        missing_doc_ids = [doc_id for doc_id in doc_ids if doc_id not in found_doc_ids]
+        return jsonify({'error': f'Documents not found for this trainer: {missing_doc_ids}'}), 404
 
-    job_id = create_generation_job(doc_id, trainer_id, domain_ids, domain_names)
-    _start_generation_job(job_id, doc_id, domain_ids, domain_names, doc['raw_text'])
+    jobs = []
+    for doc in docs:
+        job_id = create_generation_job(doc['doc_id'], trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
+        _start_generation_job(job_id, doc, domain_ids, domain_names, custom_prompt)
+        job = get_generation_job(job_id, trainer_id=trainer_id)
+        jobs.append({
+            'job_id': job_id,
+            'doc_id': doc['doc_id'],
+            'file_name': doc['file_name'],
+            'status': job['status'],
+        })
 
-    return jsonify({
-        'job_id': job_id,
-        'doc_id': doc_id,
-        'status': get_generation_job(job_id, trainer_id=trainer_id)['status'],
-    }), 202
+    response_payload = {
+        'doc_ids': doc_ids,
+        'custom_prompt': custom_prompt,
+        'jobs': jobs,
+        'total_jobs': len(jobs),
+    }
+    if len(jobs) == 1:
+        response_payload['job_id'] = jobs[0]['job_id']
+        response_payload['doc_id'] = jobs[0]['doc_id']
+        response_payload['status'] = jobs[0]['status']
+
+    return jsonify(response_payload), 202
 
 
 @app.route('/api/jobs/<int:job_id>')
