@@ -1,4 +1,6 @@
 import io
+import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -51,6 +53,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.original_db_path = database.DB_PATH
         self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         database.DB_PATH = os.path.join(self.temp_dir.name, 'test.db')
+        self.mock_fixture_path = os.path.join(self.temp_dir.name, 'live_fixture.json')
         database.init_db()
         app_module.app.config['TESTING'] = True
         app_module.app.config['INLINE_GENERATION_JOBS'] = True
@@ -116,6 +119,8 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(job_payload['result']['doc_ids'], [doc_one, doc_two])
         self.assertEqual(len(job_payload['result']['documents']), 2)
         self.assertEqual(len(job_payload['result']['modules']), 2)
+        self.assertIn('safe_full_text', job_payload['result']['documents'][0])
+        self.assertIn('Client workflow', job_payload['result']['documents'][0]['safe_full_text'])
         self.assertEqual(job_payload['result']['modules'][0]['source_doc_ids'], [doc_one, doc_two])
         self.assertEqual(job_payload['result']['modules'][0]['source_files'], ['first.txt', 'second.txt'])
 
@@ -435,6 +440,142 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertTrue(all(module['source_doc_ids'] for module in result['modules']))
         self.assertIn('Emphasize follow-up actions.', result['document_summary'])
         self.assertIn('Emphasize follow-up actions.', result['modules'][0]['key_takeaway'])
+
+    def test_generate_batch_micro_modules_persists_live_result_as_mock_fixture(self):
+        documents = [
+            {'doc_id': 1, 'file_name': 'doc-one.txt', 'raw_text': 'Client onboarding involves workflow and compliance steps.'},
+            {'doc_id': 2, 'file_name': 'doc-two.txt', 'raw_text': 'Follow-up actions connect service and policy review.'},
+        ]
+        stage_one_payload = {
+            'batch_summary': 'The two files share a common onboarding and follow-up theme.',
+            'documents': [
+                {
+                    'doc_id': 1,
+                    'file_name': 'doc-one.txt',
+                    'summary': 'Document one summary.',
+                    'key_points': ['Workflow mapping', 'Compliance checks'],
+                },
+                {
+                    'doc_id': 2,
+                    'file_name': 'doc-two.txt',
+                    'summary': 'Document two summary.',
+                    'key_points': ['Client follow-up', 'Policy review'],
+                },
+            ],
+        }
+        stage_two_payload = {
+            'document_summary': 'Integrated summary.',
+            'domains': ['CRM', 'Compliance'],
+            'total_modules': 1,
+            'modules': [
+                {
+                    'sequence_order': 1,
+                    'title': 'Integrated Module',
+                    'content': 'Combine workflow and follow-up guidance into one module.',
+                    'key_takeaway': 'Use both files together.',
+                    'reading_time_minutes': 2,
+                    'source_doc_ids': [1, 2],
+                },
+            ],
+        }
+
+        with patch.dict(
+            os.environ,
+            {
+                'OPENAI_API_KEY': 'test-key',
+                'MOCK_LLM_FIXTURE_PATH': self.mock_fixture_path,
+            },
+            clear=True,
+        ):
+            with patch.object(llm, '_request_structured_output', side_effect=[stage_one_payload, stage_two_payload]):
+                result = llm.generate_batch_micro_modules(
+                    documents,
+                    ['CRM', 'Compliance'],
+                    custom_prompt='Emphasize client communication.',
+                )
+
+        self.assertEqual(result['domains'], ['CRM', 'Compliance'])
+        self.assertTrue(os.path.exists(self.mock_fixture_path))
+
+        with open(self.mock_fixture_path, 'r', encoding='utf-8') as file:
+            fixture = json.load(file)
+
+        self.assertEqual(fixture['request']['domains'], ['CRM', 'Compliance'])
+        self.assertEqual(fixture['request']['custom_prompt'], 'Emphasize client communication.')
+        self.assertEqual(fixture['generation_payload']['modules'][0]['source_doc_ids'], [1, 2])
+
+    def test_generate_batch_micro_modules_prefers_saved_live_fixture_in_mock_mode(self):
+        fixture = {
+            'fixture_version': 1,
+            'captured_at': '2026-04-21T00:00:00+00:00',
+            'source': 'live_openai_response',
+            'model': llm.DEFAULT_MODEL,
+            'request': {
+                'domains': ['CRM', 'Compliance'],
+                'custom_prompt': 'Focus on real fixture replay.',
+                'documents': [
+                    {
+                        'original_doc_id': 101,
+                        'file_name': 'doc-one.txt',
+                        'text_sha256': hashlib.sha256(
+                            'Client onboarding involves workflow and compliance steps.'.encode('utf-8')
+                        ).hexdigest(),
+                    },
+                    {
+                        'original_doc_id': 102,
+                        'file_name': 'doc-two.txt',
+                        'text_sha256': hashlib.sha256(
+                            'Follow-up actions connect service and policy review.'.encode('utf-8')
+                        ).hexdigest(),
+                    },
+                ],
+            },
+            'summary_payload': {
+                'batch_summary': 'Saved live summary.',
+                'documents': [],
+            },
+            'generation_payload': {
+                'document_summary': 'Saved live integrated summary.',
+                'domains': ['CRM', 'Compliance'],
+                'total_modules': 1,
+                'modules': [
+                    {
+                        'sequence_order': 1,
+                        'title': 'Saved Live Module',
+                        'content': 'This module came from a previously captured live result.',
+                        'key_takeaway': 'Replay captured outputs when the request matches.',
+                        'reading_time_minutes': 2,
+                        'source_doc_ids': [101, 102],
+                    },
+                ],
+            },
+        }
+
+        with open(self.mock_fixture_path, 'w', encoding='utf-8') as file:
+            json.dump(fixture, file, ensure_ascii=False, indent=2)
+
+        documents = [
+            {'doc_id': 1, 'file_name': 'doc-one.txt', 'raw_text': 'Client onboarding involves workflow and compliance steps.'},
+            {'doc_id': 2, 'file_name': 'doc-two.txt', 'raw_text': 'Follow-up actions connect service and policy review.'},
+        ]
+
+        with patch.dict(
+            os.environ,
+            {
+                'MOCK_LLM': 'true',
+                'MOCK_LLM_FIXTURE_PATH': self.mock_fixture_path,
+            },
+            clear=True,
+        ):
+            result = llm.generate_batch_micro_modules(
+                documents,
+                ['CRM', 'Compliance'],
+                custom_prompt='Use the saved live fixture even if the prompt text changes.',
+            )
+
+        self.assertEqual(result['document_summary'], 'Saved live integrated summary.')
+        self.assertEqual(result['modules'][0]['title'], 'Saved Live Module')
+        self.assertEqual(result['modules'][0]['source_doc_ids'], [1, 2])
 
     def test_request_structured_output_retries_rate_limits(self):
         class FakeRateLimitError(Exception):

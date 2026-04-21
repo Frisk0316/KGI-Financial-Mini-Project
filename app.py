@@ -19,7 +19,7 @@ from database import (
     save_generated_content,
     update_generation_job,
 )
-from file_parser import build_safe_preview, extract_text
+from file_parser import build_safe_preview, build_safe_text, extract_text
 from llm import LLMConfigurationError, LLMServiceError, generate_batch_micro_modules
 
 load_dotenv()
@@ -148,6 +148,7 @@ def _serialize_document(doc):
         'upload_timestamp': doc['upload_timestamp'],
         'char_count': len(doc['raw_text']),
         'preview_text': build_safe_preview(doc['raw_text']),
+        'safe_full_text': build_safe_text(doc['raw_text']),
         'domains': doc['domains'],
         'modules': doc['modules'],
     }
@@ -160,6 +161,7 @@ def _build_generation_result(batch_id, docs, llm_result):
             'doc_id': doc['doc_id'],
             'file_name': doc['file_name'],
             'preview_text': build_safe_preview(doc['raw_text']),
+            'safe_full_text': build_safe_text(doc['raw_text']),
             'char_count': len(doc['raw_text']),
         }
         for doc in docs

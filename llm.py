@@ -1,9 +1,13 @@
+import copy
+import hashlib
 import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 
 
+BASE_DIR = os.path.dirname(__file__)
 DEFAULT_MODEL = 'gpt-5.4-mini'
 TARGET_READING_TIME_MINUTES = 2.0
 MOCK_LLM_ENABLED_VALUES = {'1', 'true', 'yes', 'on'}
@@ -13,6 +17,8 @@ DEFAULT_RATE_LIMIT_DELAY_SECONDS = 20.0
 DEFAULT_TRANSIENT_DELAY_SECONDS = 2.0
 MAX_DOC_PROMPT_CHARS = 18_000
 MAX_TOTAL_PROMPT_CHARS = 90_000
+MOCK_DATA_DIR = os.path.join(BASE_DIR, 'mock_data')
+DEFAULT_MOCK_FIXTURE_FILENAME = 'latest_live_batch_fixture.json'
 
 SYSTEM_PROMPT = (
     'You are an expert instructional designer for a financial services micro-learning platform. '
@@ -98,10 +104,7 @@ MODULES_SCHEMA = {
     'additionalProperties': False,
     'properties': {
         'document_summary': {'type': 'string'},
-        'domains': {
-            'type': 'array',
-            'items': {'type': 'string'},
-        },
+        'domains': {'type': 'array', 'items': {'type': 'string'}},
         'total_modules': {'type': 'integer'},
         'modules': {
             'type': 'array',
@@ -148,12 +151,10 @@ def _read_positive_int_env(name, default):
     raw_value = os.environ.get(name, '').strip()
     if not raw_value:
         return default
-
     try:
         parsed = int(raw_value)
     except ValueError:
         return default
-
     return parsed if parsed > 0 else default
 
 
@@ -200,8 +201,7 @@ def _select_key_sentences(text, max_items=3):
         if len(selected) >= max_items:
             return selected
 
-    fragments = re.split(r'[;；•]', str(text or ''))
-    for fragment in fragments:
+    for fragment in re.split(r'[;；•]', str(text or '')):
         cleaned = _truncate_text(fragment.strip(' -'), 120)
         if len(cleaned) < 12:
             continue
@@ -358,10 +358,7 @@ def _build_document_corpus(documents):
 
         raw_text = document.get('raw_text', '')
         excerpt = _truncate_text(raw_text, min(MAX_DOC_PROMPT_CHARS, remaining))
-        pieces.append(
-            f"[Document {int(document['doc_id'])}] {document['file_name']}\n"
-            f"{excerpt}"
-        )
+        pieces.append(f"[Document {int(document['doc_id'])}] {document['file_name']}\n{excerpt}")
         remaining -= len(excerpt)
 
     return '\n\n'.join(pieces)
@@ -570,6 +567,146 @@ def validate_micro_modules_payload(payload, expected_domains, valid_doc_ids):
     }
 
 
+def _get_mock_fixture_path():
+    configured_path = os.environ.get('MOCK_LLM_FIXTURE_PATH', '').strip()
+    if not configured_path:
+        return os.path.join(MOCK_DATA_DIR, DEFAULT_MOCK_FIXTURE_FILENAME)
+    if os.path.isabs(configured_path):
+        return configured_path
+    return os.path.join(BASE_DIR, configured_path)
+
+
+def _document_fingerprint(document):
+    raw_text = str(document.get('raw_text', ''))
+    return hashlib.sha256(raw_text.encode('utf-8')).hexdigest()
+
+
+def _build_request_signature(documents, domain_names, custom_prompt):
+    return {
+        'domains': list(domain_names),
+        'custom_prompt': _normalize_whitespace(custom_prompt),
+        'documents': [
+            {
+                'original_doc_id': int(document['doc_id']),
+                'file_name': document['file_name'],
+                'text_sha256': _document_fingerprint(document),
+            }
+            for document in documents
+        ],
+    }
+
+
+def _build_live_mock_fixture(documents, domain_names, custom_prompt, summary_payload, generation_payload, model):
+    return {
+        'fixture_version': 1,
+        'captured_at': datetime.now(timezone.utc).isoformat(),
+        'source': 'live_openai_response',
+        'model': model,
+        'request': _build_request_signature(documents, domain_names, custom_prompt),
+        'summary_payload': summary_payload,
+        'generation_payload': generation_payload,
+    }
+
+
+def _save_live_mock_fixture(documents, domain_names, custom_prompt, summary_payload, generation_payload, model):
+    fixture_path = _get_mock_fixture_path()
+    os.makedirs(os.path.dirname(fixture_path), exist_ok=True)
+    fixture = _build_live_mock_fixture(
+        documents,
+        domain_names,
+        custom_prompt,
+        summary_payload,
+        generation_payload,
+        model,
+    )
+    with open(fixture_path, 'w', encoding='utf-8') as file:
+        json.dump(fixture, file, ensure_ascii=False, indent=2)
+
+
+def _fixture_request_matches(documents, domain_names, custom_prompt, fixture_request):
+    if not isinstance(fixture_request, dict):
+        return False
+
+    fixture_domains = [_normalize_whitespace(name) for name in fixture_request.get('domains', [])]
+    if fixture_domains != list(domain_names):
+        return False
+
+    fixture_documents = fixture_request.get('documents', [])
+    if not isinstance(fixture_documents, list) or len(fixture_documents) != len(documents):
+        return False
+
+    current_counts = {}
+    for document in documents:
+        key = (document['file_name'], _document_fingerprint(document))
+        current_counts[key] = current_counts.get(key, 0) + 1
+
+    for fixture_document in fixture_documents:
+        key = (
+            fixture_document.get('file_name'),
+            fixture_document.get('text_sha256'),
+        )
+        if current_counts.get(key, 0) <= 0:
+            return False
+        current_counts[key] -= 1
+
+    return True
+
+
+def _remap_fixture_payload_to_current_documents(fixture_payload, fixture_request, documents):
+    current_buckets = {}
+    for document in documents:
+        key = (document['file_name'], _document_fingerprint(document))
+        current_buckets.setdefault(key, []).append(document)
+
+    original_to_current = {}
+    for fixture_document in fixture_request.get('documents', []):
+        key = (
+            fixture_document.get('file_name'),
+            fixture_document.get('text_sha256'),
+        )
+        candidates = current_buckets.get(key, [])
+        if not candidates:
+            raise ValueError('The saved mock fixture could not be mapped to the current document set.')
+
+        current_document = candidates.pop(0)
+        original_to_current[int(fixture_document['original_doc_id'])] = int(current_document['doc_id'])
+
+    remapped_payload = copy.deepcopy(fixture_payload)
+    for module in remapped_payload.get('modules', []):
+        module['source_doc_ids'] = [
+            original_to_current[int(source_doc_id)]
+            for source_doc_id in module.get('source_doc_ids', [])
+        ]
+
+    return remapped_payload
+
+
+def _load_saved_live_mock_fixture(documents, domain_names, custom_prompt):
+    fixture_path = _get_mock_fixture_path()
+    if not os.path.exists(fixture_path):
+        return None
+
+    try:
+        with open(fixture_path, 'r', encoding='utf-8') as file:
+            fixture = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    fixture_request = fixture.get('request', {})
+    if not _fixture_request_matches(documents, domain_names, custom_prompt, fixture_request):
+        return None
+
+    generation_payload = fixture.get('generation_payload')
+    if not isinstance(generation_payload, dict):
+        return None
+
+    return _remap_fixture_payload_to_current_documents(
+        generation_payload,
+        fixture_request,
+        documents,
+    )
+
+
 def _summarize_documents_mock(documents, domain_names, custom_prompt=''):
     prefer_cjk = any(_contains_cjk(document.get('raw_text', '')) for document in documents)
     focus_phrase = _build_focus_phrase(custom_prompt, prefer_cjk)
@@ -593,7 +730,7 @@ def _summarize_documents_mock(documents, domain_names, custom_prompt=''):
     if prefer_cjk:
         batch_summary = (
             f'這批文件涵蓋 {file_names}，重點集中在 {focus_phrase}，'
-            '可先用整體摘要掌握共同主題，再延伸成跨文件的微課模組。'
+            '可以先用整體摘要掌握共同主題，再延伸成跨文件的微課模組。'
         )
     else:
         batch_summary = (
@@ -608,7 +745,6 @@ def _summarize_documents_mock(documents, domain_names, custom_prompt=''):
 
 
 def _build_mock_module_content(group, domain_names, focus_phrase, prefer_cjk):
-    summary_lead = group[0]['summary']
     point_one = group[0]['key_points'][0]
     extra_points = []
     for item in group:
@@ -654,6 +790,7 @@ def _generate_batch_modules_mock(summary_payload, documents, domain_names, custo
     for index, group in enumerate(groups, start=1):
         source_doc_ids = [int(item['doc_id']) for item in group]
         title_context = _truncate_text(group[0]['summary'], 30 if prefer_cjk else 42)
+
         if prefer_cjk:
             title = f'{profile["title_zh"]} {index}: {title_context}'
             key_takeaway = (
@@ -680,7 +817,7 @@ def _generate_batch_modules_mock(summary_payload, documents, domain_names, custo
 
     return {
         'document_summary': summary_payload['batch_summary'],
-        'domains': domain_names,
+        'domains': list(domain_names),
         'total_modules': len(modules),
         'modules': modules,
     }
@@ -695,6 +832,10 @@ def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
     valid_doc_ids = [int(document['doc_id']) for document in documents]
 
     if _is_mock_llm_enabled():
+        saved_fixture_payload = _load_saved_live_mock_fixture(documents, domain_names, custom_prompt)
+        if saved_fixture_payload is not None:
+            return validate_micro_modules_payload(saved_fixture_payload, domain_names, valid_doc_ids)
+
         summary_payload = _summarize_documents_mock(documents, domain_names, custom_prompt=custom_prompt)
         generation_payload = _generate_batch_modules_mock(
             summary_payload,
@@ -709,7 +850,6 @@ def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
         raise LLMConfigurationError('OPENAI_API_KEY environment variable is not set.')
 
     model = os.environ.get('OPENAI_MODEL', DEFAULT_MODEL).strip() or DEFAULT_MODEL
-
     stage_one_prompt = _build_stage_one_prompt(documents, domain_names, custom_prompt=custom_prompt)
     summary_payload = _request_structured_output(
         api_key,
@@ -740,5 +880,17 @@ def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
 
     if not validated_payload['document_summary']:
         validated_payload['document_summary'] = validated_summary_payload['batch_summary']
+
+    try:
+        _save_live_mock_fixture(
+            documents,
+            domain_names,
+            custom_prompt,
+            validated_summary_payload,
+            validated_payload,
+            model,
+        )
+    except OSError:
+        pass
 
     return validated_payload

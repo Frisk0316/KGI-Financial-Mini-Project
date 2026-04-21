@@ -1,0 +1,69 @@
+{
+  "fixture_version": 1,
+  "captured_at": "2026-04-21T08:20:08.120039+00:00",
+  "source": "live_openai_response",
+  "model": "gpt-5.4-mini",
+  "request": {
+    "domains": [
+      "CRM",
+      "Compliance"
+    ],
+    "custom_prompt": "Emphasize client communication.",
+    "documents": [
+      {
+        "original_doc_id": 1,
+        "file_name": "doc-one.txt",
+        "text_sha256": "2897d84f806aff975781363a3e1ab4d1dae2f74e9fe995c9f6c765c34777f12b"
+      },
+      {
+        "original_doc_id": 2,
+        "file_name": "doc-two.txt",
+        "text_sha256": "f819c98350425a99dc3f1cf8c0b50b424507d01492f7c751fe519ab2d81bde0b"
+      }
+    ]
+  },
+  "summary_payload": {
+    "batch_summary": "The two files share a common onboarding and follow-up theme.",
+    "documents": [
+      {
+        "doc_id": 1,
+        "file_name": "doc-one.txt",
+        "summary": "Document one summary.",
+        "key_points": [
+          "Workflow mapping",
+          "Compliance checks"
+        ]
+      },
+      {
+        "doc_id": 2,
+        "file_name": "doc-two.txt",
+        "summary": "Document two summary.",
+        "key_points": [
+          "Client follow-up",
+          "Policy review"
+        ]
+      }
+    ]
+  },
+  "generation_payload": {
+    "document_summary": "Integrated summary.",
+    "domains": [
+      "CRM",
+      "Compliance"
+    ],
+    "total_modules": 1,
+    "modules": [
+      {
+        "sequence_order": 1,
+        "title": "Integrated Module",
+        "content": "Combine workflow and follow-up guidance into one module.",
+        "key_takeaway": "Use both files together.",
+        "reading_time_minutes": 2.0,
+        "source_doc_ids": [
+          1,
+          2
+        ]
+      }
+    ]
+  }
+}

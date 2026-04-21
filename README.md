@@ -101,13 +101,16 @@ Create a local `.env` file:
 OPENAI_API_KEY=your_api_key_here
 OPENAI_MODEL=gpt-5.4-mini
 MOCK_LLM=false
+MOCK_LLM_FIXTURE_PATH=mock_data/latest_live_batch_fixture.json
 OPENAI_MAX_RETRIES=4
 MAX_PARALLEL_GENERATION_WORKERS=1
 ```
 
 You can also copy `.env.example` and fill in your key.
 
-If you want to test without calling the OpenAI API, set `MOCK_LLM=true`. The app will generate deterministic local demo output that still follows the JSON schema and selected domain tags.
+If you want to test without calling the OpenAI API, set `MOCK_LLM=true`. The app will first try to replay the latest saved live fixture from `MOCK_LLM_FIXTURE_PATH` when the same document set and selected domains are used, and if no matching fixture is found it will fall back to deterministic local demo output that still follows the JSON schema and selected domain tags.
+
+Every successful live OpenAI batch run now also saves a reusable mock fixture to `mock_data/latest_live_batch_fixture.json` by default. This makes it easy to capture a real AI result once and replay it later in mock mode for demos.
 
 When you generate many documents in one batch, the app now retries transient OpenAI failures such as `429 rate_limit_exceeded` and, by default, processes one LLM request at a time to reduce burst traffic. You can tune this with `OPENAI_MAX_RETRIES` and `MAX_PARALLEL_GENERATION_WORKERS`.
 
@@ -141,6 +144,7 @@ Open `http://127.0.0.1:5000` in your browser.
 - The backend upload API accepts one file per request. The UI handles multiple files by uploading them sequentially.
 - The generate API accepts `doc_ids` and starts one background job per selected document batch.
 - The UI includes a `Custom Prompt` field, and the backend injects it into both LLM prompt stages alongside the selected domains.
+- Successful live LLM runs are automatically saved as a reusable mock fixture, and `MOCK_LLM=true` will replay that fixture when the same documents and domains are used.
 - Domain tags are user-selected guidance. The `Other` tag is available when the document does not fit the predefined taxonomy.
 - Safe preview masking is intentionally lightweight and should not be treated as a full DLP solution.
 - `HARDENING_PLAN.md` is considered an internal planning document and is excluded from normal Git tracking.

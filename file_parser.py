@@ -26,8 +26,12 @@ def redact_sensitive_text(text: str) -> str:
     return redacted
 
 
+def build_safe_text(text: str) -> str:
+    return redact_sensitive_text(text)
+
+
 def build_safe_preview(text: str, max_chars: int = 4000) -> str:
-    preview = redact_sensitive_text(text)
+    preview = build_safe_text(text)
     if len(preview) <= max_chars:
         return preview
     return f"{preview[:max_chars].rstrip()}\n\n...[Preview truncated for safety]..."

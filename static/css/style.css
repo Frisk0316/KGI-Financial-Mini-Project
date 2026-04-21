@@ -139,6 +139,58 @@
   gap: 0.35rem;
 }
 
+.source-viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.source-doc-tab {
+  border-radius: 999px;
+}
+
+.source-viewer-meta {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #dee2e6;
+  border-radius: 10px;
+  background: #f8f9fa;
+}
+
+.source-viewer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.source-paragraph {
+  padding: 0.9rem 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: #343a40;
+  white-space: pre-wrap;
+  word-break: break-word;
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.source-paragraph.is-matched {
+  border-color: #86b7fe;
+  background: #eef4ff;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.12);
+}
+
+.source-link-btn {
+  cursor: pointer;
+  color: #0d6efd;
+}
+
+.source-link-btn:hover {
+  background: #eef4ff;
+}
+
 .sprint-card .key-takeaway {
   border-left: 3px solid #ffc107;
   padding: 0.4rem 0.75rem;

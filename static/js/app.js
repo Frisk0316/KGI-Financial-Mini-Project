@@ -307,9 +307,7 @@ function renderUploadedDocuments() {
   });
 
   section.classList.toggle('d-none', state.documents.length === 0);
-
-  const clearAllButton = document.getElementById('btn-clear-all-files');
-  clearAllButton.disabled = state.documents.length === 0 || state.isGenerating;
+  document.getElementById('btn-clear-all-files').disabled = state.documents.length === 0 || state.isGenerating;
 }
 
 function updateGenerateButtonState() {
@@ -419,15 +417,14 @@ async function uploadSingleFile(file) {
 }
 
 function addUploadedDocument(data) {
-  const documentRecord = {
+  state.documents.push({
     doc_id: data.doc_id,
     trainer_id: data.trainer_id,
     file_name: data.file_name,
     preview_text: data.preview_text,
     char_count: data.char_count,
-  };
+  });
 
-  state.documents.push(documentRecord);
   state.trainerId = data.trainer_id;
   document.getElementById('trainer-id').value = data.trainer_id;
 }
@@ -570,9 +567,14 @@ function renderBatchResults(jobs) {
 
   const job = jobs[0];
   const result = job.result || {};
-  const documents = result.documents || [];
+  const documents = (result.documents || []).map(doc => ({
+    ...doc,
+    safe_full_text: doc.safe_full_text || doc.preview_text || '',
+    paragraphs: splitIntoParagraphs(doc.safe_full_text || doc.preview_text || ''),
+  }));
   const modules = result.modules || [];
   const domains = result.domains || [];
+  const documentsById = new Map(documents.map(doc => [Number(doc.doc_id), doc]));
 
   const block = document.createElement('section');
   block.className = 'result-document-block';
@@ -587,9 +589,13 @@ function renderBatchResults(jobs) {
     <div class="row g-3">
       <div class="col-md-5">
         <div class="split-panel-header">
-          <i class="bi bi-journal-text me-1"></i>Batch Source Documents
+          <i class="bi bi-journal-text me-1"></i>Source Viewer
         </div>
-        <div class="split-pane sprint-panel" id="source-documents-panel"></div>
+        <div class="split-pane sprint-panel">
+          <div class="source-viewer-toolbar mb-3" id="source-viewer-toolbar"></div>
+          <div class="source-viewer-meta mb-3" id="source-viewer-meta"></div>
+          <div class="source-viewer-body" id="source-viewer-body"></div>
+        </div>
       </div>
       <div class="col-md-7">
         <div class="split-panel-header">
@@ -608,22 +614,63 @@ function renderBatchResults(jobs) {
     pillsContainer.appendChild(span);
   });
 
-  const sourcePanel = block.querySelector('#source-documents-panel');
+  const sourceToolbar = block.querySelector('#source-viewer-toolbar');
+  const sourceMeta = block.querySelector('#source-viewer-meta');
+  const sourceBody = block.querySelector('#source-viewer-body');
+
   documents.forEach(doc => {
-    const card = document.createElement('div');
-    card.className = 'card mb-3';
-    card.innerHTML = `
-      <div class="card-header d-flex justify-content-between align-items-center gap-2">
-        <span class="fw-semibold">${escapeHtml(doc.file_name || `Document ${doc.doc_id}`)}</span>
-        <span class="badge bg-light text-dark border">${Number(doc.char_count || 0).toLocaleString()} chars</span>
-      </div>
-      <div class="card-body">
-        <div class="small text-muted mb-2">doc_id: ${escapeHtml(doc.doc_id)}</div>
-        <pre class="raw-text-panel p-0 border-0 bg-transparent mb-0" style="height:auto;">${escapeHtml(doc.preview_text || '')}</pre>
-      </div>
-    `;
-    sourcePanel.appendChild(card);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-sm btn-outline-secondary source-doc-tab';
+    button.dataset.docId = doc.doc_id;
+    button.textContent = doc.file_name || `Document ${doc.doc_id}`;
+    button.addEventListener('click', () => renderSourceViewer(doc.doc_id, null, false));
+    sourceToolbar.appendChild(button);
   });
+
+  function renderSourceViewer(docId, module = null, shouldScroll = false) {
+    const selectedDoc = documentsById.get(Number(docId));
+    if (!selectedDoc) {
+      return;
+    }
+
+    const matchedParagraphIndex = findBestParagraphIndex(selectedDoc.paragraphs, module);
+
+    sourceToolbar.querySelectorAll('.source-doc-tab').forEach(button => {
+      const isActive = Number(button.dataset.docId) === Number(docId);
+      button.classList.toggle('btn-primary', isActive);
+      button.classList.toggle('btn-outline-secondary', !isActive);
+      button.classList.toggle('active', isActive);
+    });
+
+    sourceMeta.innerHTML = `
+      <div class="small text-muted">Selected source</div>
+      <div class="fw-semibold">${escapeHtml(selectedDoc.file_name || `Document ${selectedDoc.doc_id}`)}</div>
+      <div class="small text-muted">doc_id: ${escapeHtml(selectedDoc.doc_id)} • ${Number(selectedDoc.char_count || 0).toLocaleString()} chars</div>
+      ${module ? '<div class="small text-primary mt-1">已定位到這張學習卡最可能對應的原文段落。</div>' : ''}
+    `;
+
+    sourceBody.innerHTML = '';
+    selectedDoc.paragraphs.forEach((paragraph, index) => {
+      const paragraphEl = document.createElement('div');
+      paragraphEl.className = 'source-paragraph';
+      if (index === matchedParagraphIndex && module) {
+        paragraphEl.classList.add('is-matched');
+      }
+      paragraphEl.dataset.paragraphIndex = index;
+      paragraphEl.innerHTML = renderMultilineText(paragraph);
+      sourceBody.appendChild(paragraphEl);
+    });
+
+    if (module && shouldScroll) {
+      const matchedEl = sourceBody.querySelector('.source-paragraph.is-matched');
+      if (matchedEl) {
+        matchedEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    } else {
+      sourceBody.scrollTop = 0;
+    }
+  }
 
   const modulesPanel = block.querySelector('#batch-modules-panel');
   modules.forEach((mod, index) => {
@@ -631,9 +678,6 @@ function renderBatchResults(jobs) {
     const readingTime = mod.reading_time_minutes != null ? mod.reading_time_minutes : 2;
     const domainBadges = domains.map(name =>
       `<span class="badge rounded-pill text-bg-info-subtle border border-info-subtle text-info-emphasis">#${escapeHtml(name)}</span>`
-    ).join(' ');
-    const sourceBadges = (mod.source_files || []).map(name =>
-      `<span class="badge rounded-pill text-bg-light border">${escapeHtml(name)}</span>`
     ).join(' ');
 
     const card = document.createElement('div');
@@ -650,7 +694,7 @@ function renderBatchResults(jobs) {
       </div>
       <div class="card-body">
         <div class="module-domain-pills mb-2">${domainBadges}</div>
-        ${sourceBadges ? `<div class="module-domain-pills mb-3">${sourceBadges}</div>` : ''}
+        <div class="module-domain-pills mb-3 source-link-group"></div>
         <p class="card-text">${renderMultilineText(mod.content || '')}</p>
         ${mod.key_takeaway ? `
           <blockquote class="key-takeaway mb-0">
@@ -660,6 +704,22 @@ function renderBatchResults(jobs) {
         ` : ''}
       </div>
     `;
+
+    const sourceLinkGroup = card.querySelector('.source-link-group');
+    (mod.source_doc_ids || []).forEach(sourceDocId => {
+      const sourceDoc = documentsById.get(Number(sourceDocId));
+      if (!sourceDoc) {
+        return;
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'badge rounded-pill text-bg-light border source-link-btn';
+      button.textContent = sourceDoc.file_name || `Document ${sourceDocId}`;
+      button.addEventListener('click', () => renderSourceViewer(sourceDocId, mod, true));
+      sourceLinkGroup.appendChild(button);
+    });
+
     modulesPanel.appendChild(card);
   });
 
@@ -667,6 +727,123 @@ function renderBatchResults(jobs) {
   document.getElementById('summary-badge').textContent = `${documents.length} document(s), ${modules.length} module(s)`;
   document.getElementById('split-screen').classList.remove('d-none');
   document.getElementById('split-screen').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  if (documents.length > 0) {
+    renderSourceViewer(documents[0].doc_id, null, false);
+  }
+}
+
+function splitIntoParagraphs(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return ['No source text available.'];
+  }
+
+  const primaryChunks = normalized
+    .split(/\n\s*\n+/)
+    .map(chunk => chunk.trim())
+    .filter(Boolean);
+
+  const paragraphs = [];
+  const chunks = primaryChunks.length ? primaryChunks : [normalized];
+
+  chunks.forEach(chunk => {
+    if (chunk.length <= 700) {
+      paragraphs.push(chunk);
+      return;
+    }
+
+    const sentences = chunk.split(/(?<=[。！？.!?])\s+/).filter(Boolean);
+    let buffer = '';
+    sentences.forEach(sentence => {
+      const next = buffer ? `${buffer} ${sentence}` : sentence;
+      if (next.length > 700 && buffer) {
+        paragraphs.push(buffer.trim());
+        buffer = sentence;
+      } else {
+        buffer = next;
+      }
+    });
+    if (buffer.trim()) {
+      paragraphs.push(buffer.trim());
+    }
+  });
+
+  return paragraphs.length ? paragraphs : [normalized];
+}
+
+function findBestParagraphIndex(paragraphs, module) {
+  if (!module || !Array.isArray(paragraphs) || paragraphs.length === 0) {
+    return 0;
+  }
+
+  const phrases = buildMatchPhrases(module);
+  if (!phrases.length) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestScore = -1;
+
+  paragraphs.forEach((paragraph, index) => {
+    const normalizedParagraph = normalizeSearchText(paragraph);
+    let score = 0;
+
+    phrases.forEach(phrase => {
+      if (normalizedParagraph.includes(phrase.normalized)) {
+        score += phrase.weight;
+      }
+    });
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestScore > 0 ? bestIndex : 0;
+}
+
+function buildMatchPhrases(module) {
+  const rawPhrases = String([
+    module.title || '',
+    module.content || '',
+    module.key_takeaway || '',
+  ].join(' '))
+    .split(/[\n\r,.;:!?，。；：！？()（）\[\]【】"“”'\/\s]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+
+  const seen = new Set();
+  const phrases = [];
+
+  rawPhrases.forEach(phrase => {
+    const normalized = normalizeSearchText(phrase);
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+
+    const hasCjk = /[\u3400-\u9fff]/.test(normalized);
+    const isUseful = hasCjk ? normalized.length >= 2 : normalized.length >= 4;
+    if (!isUseful) {
+      return;
+    }
+
+    seen.add(normalized);
+    phrases.push({
+      normalized,
+      weight: Math.min(Math.max(normalized.length, 3), 20),
+    });
+  });
+
+  return phrases.sort((a, b) => b.weight - a.weight).slice(0, 16);
+}
+
+function normalizeSearchText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function clearSplitScreen() {
