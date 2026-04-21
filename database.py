@@ -125,7 +125,12 @@ def init_db():
 def get_all_domains():
     with get_db_connection() as conn:
         rows = conn.execute(
-            'SELECT domain_id, domain_name, description FROM KnowledgeDomains ORDER BY domain_name'
+            """
+            SELECT domain_id, domain_name, description
+              FROM KnowledgeDomains
+             ORDER BY CASE WHEN domain_name = 'Other' THEN 1 ELSE 0 END,
+                      domain_name
+            """
         ).fetchall()
     return [dict(row) for row in rows]
 

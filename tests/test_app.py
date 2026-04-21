@@ -74,6 +74,7 @@ class KnowledgeShredderAppTests(unittest.TestCase):
     def test_domains_include_other_tag(self):
         domains = database.get_all_domains()
         self.assertIn('Other', {domain['domain_name'] for domain in domains})
+        self.assertEqual(domains[-1]['domain_name'], 'Other')
 
     def test_generate_creates_single_batch_job_and_persists_integrated_modules(self):
         doc_one = self.create_document('trainer_001', 'first.txt', 'Client workflow and compliance review. ')
