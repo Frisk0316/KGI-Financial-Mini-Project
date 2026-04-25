@@ -389,6 +389,20 @@ def _fetch_modules_for_batch(conn, batch_id):
     return modules
 
 
+def _fetch_documents_for_batch(conn, batch_id):
+    rows = conn.execute(
+        """
+        SELECT sd.doc_id, sd.file_name, sd.upload_timestamp
+          FROM Batch_Document_Map bdm
+          JOIN SourceDocuments sd ON bdm.doc_id = sd.doc_id
+         WHERE bdm.batch_id = ?
+         ORDER BY bdm.batch_document_id
+        """,
+        (batch_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _fetch_legacy_modules_for_document(conn, doc_id):
     rows = conn.execute(
         """
@@ -445,6 +459,60 @@ def get_document_with_modules(doc_id, trainer_id=None):
         'domains': [dict(domain) for domain in domains],
         'modules': modules,
     }
+
+
+def get_generation_history(trainer_id, limit=10):
+    normalized_limit = max(1, min(int(limit), 50))
+
+    with get_db_connection() as conn:
+        batch_rows = conn.execute(
+            """
+            SELECT
+                gb.batch_id,
+                gb.trainer_id,
+                gb.requested_domains_json,
+                gb.requested_custom_prompt,
+                gb.combined_summary,
+                gb.created_timestamp,
+                gb.updated_timestamp,
+                gb.completed_timestamp,
+                gj.job_id,
+                gj.status,
+                gj.error_message,
+                gj.result_json
+              FROM GenerationBatches gb
+              LEFT JOIN GenerationJobs gj ON gb.batch_id = gj.batch_id
+             WHERE gb.trainer_id = ?
+             ORDER BY gb.created_timestamp DESC, gb.batch_id DESC
+             LIMIT ?
+            """,
+            (trainer_id, normalized_limit),
+        ).fetchall()
+
+        history = []
+        for row in batch_rows:
+            batch = dict(row)
+            requested = json.loads(batch.pop('requested_domains_json'))
+            result_json = batch.pop('result_json')
+            result_payload = json.loads(result_json) if result_json else None
+            batch_id = batch['batch_id']
+
+            modules = _fetch_modules_for_batch(conn, batch_id)
+            documents = _fetch_documents_for_batch(conn, batch_id)
+
+            history.append({
+                **batch,
+                'requested_domain_ids': requested.get('domain_ids', []),
+                'requested_domains': requested.get('domains', []),
+                'requested_custom_prompt': batch.get('requested_custom_prompt', ''),
+                'documents': documents,
+                'document_count': len(documents),
+                'modules': modules,
+                'module_count': len(modules),
+                'result': result_payload,
+            })
+
+    return history
 
 
 def get_generation_job(job_id, trainer_id=None):

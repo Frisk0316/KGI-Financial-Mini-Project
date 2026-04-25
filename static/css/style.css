@@ -51,6 +51,19 @@
   flex-wrap: wrap;
 }
 
+.history-card-clickable {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.history-card-clickable:hover,
+.history-card-clickable:focus {
+  border-color: #86b7fe !important;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.08);
+  transform: translateY(-1px);
+  outline: none;
+}
+
 .result-document-block {
   border: 1px solid #dee2e6;
   border-radius: 12px;
@@ -119,18 +132,78 @@
 
 /* Sprint cards */
 .sprint-card {
-  border-left: 4px solid #0d6efd;
-  border-radius: 6px;
+  border: 1px solid #d8e4f6;
+  border-left: 5px solid #4c6ef5;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 24px rgba(76, 110, 245, 0.08);
 }
 
 .sprint-card .card-header {
-  background: #f0f5ff;
+  background: linear-gradient(180deg, #f6f9ff 0%, #edf3ff 100%);
   font-size: 0.9rem;
+  border-bottom: 1px solid #d8e4f6;
 }
 
 .sprint-card .card-body {
   font-size: 0.88rem;
   line-height: 1.7;
+  padding: 1rem 1.05rem 1.05rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+
+.sprint-card-header {
+  padding: 0.9rem 1.05rem 0.95rem;
+}
+
+.sprint-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
+.sprint-order-badge {
+  background: #6c7a92;
+  color: #fff;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+}
+
+.sprint-time-badge {
+  background: #fff;
+  color: #334155;
+  border: 1px solid #d3dded;
+  font-size: 0.82rem;
+  padding: 0.38rem 0.68rem;
+  border-radius: 999px;
+}
+
+.sprint-card-title {
+  font-size: 1.18rem;
+  font-weight: 700;
+  line-height: 1.45;
+  color: #0f172a;
+  letter-spacing: 0.01em;
+}
+
+.sprint-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sprint-card-section-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
 }
 
 .module-domain-pills {
@@ -154,6 +227,43 @@
   border: 1px solid #dee2e6;
   border-radius: 10px;
   background: #f8f9fa;
+}
+
+.source-evidence-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid #dbe7ff;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+}
+
+.source-evidence-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #2f5fa7;
+  margin-bottom: 0.35rem;
+}
+
+.source-evidence-snippet {
+  font-size: 0.84rem;
+  line-height: 1.65;
+  color: #495057;
+}
+
+.source-evidence-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.source-evidence-term {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(13, 110, 253, 0.08);
+  color: #0a58ca;
+  font-size: 0.75rem;
 }
 
 .source-viewer-body {
@@ -191,14 +301,155 @@
   background: #eef4ff;
 }
 
+.source-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.source-evidence-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dbe7ff;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 0.75rem 0.85rem;
+  color: inherit;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.source-evidence-item:hover,
+.source-evidence-item:focus {
+  border-color: #86b7fe;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.08);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.source-evidence-item-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.45rem;
+}
+
+.source-evidence-item-text {
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: #4b5563;
+}
+
+.module-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.module-section-title {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #2f5fa7;
+  letter-spacing: 0.02em;
+  background: #edf4ff;
+  border: 1px solid #d9e7ff;
+}
+
+.module-paragraph {
+  margin: 0;
+  color: #212529;
+  line-height: 1.75;
+}
+
+.module-line-group,
+.module-subsection-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.module-line-item,
+.module-subsection-item {
+  color: #212529;
+  line-height: 1.7;
+}
+
+.module-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 12px;
+  background: #f8fbff;
+  border: 1px solid #e6eefc;
+}
+
+.module-subsection-title {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-weight: 700;
+  color: #1f3f72;
+  line-height: 1.7;
+  background: rgba(13, 110, 253, 0.08);
+}
+
+.module-subsection-items {
+  padding-left: 1.15rem;
+}
+
+.module-tone-default {
+  background: #f4f7fb;
+  border-color: #dfe7f3;
+  color: #28405d;
+}
+
+.module-tone-key {
+  background: #eef4ff;
+  border-color: #d6e4ff;
+  color: #2457a6;
+}
+
+.module-tone-planning {
+  background: #eef8f2;
+  border-color: #d5eedd;
+  color: #256c48;
+}
+
+.module-tone-tax {
+  background: #fff4ea;
+  border-color: #f5dfc6;
+  color: #9b5b1e;
+}
+
+.module-tone-application {
+  background: #eef7fb;
+  border-color: #d7eaf3;
+  color: #21617c;
+}
+
+.module-tone-warning {
+  background: #fff7e8;
+  border-color: #f4e1a5;
+  color: #8a5a00;
+}
+
 .sprint-card .key-takeaway {
-  border-left: 3px solid #ffc107;
-  padding: 0.4rem 0.75rem;
-  background: #fffbea;
-  border-radius: 4px;
+  border-left: 4px solid #ffc107;
+  padding: 0.65rem 0.85rem;
+  background: linear-gradient(180deg, #fffdf3 0%, #fff7de 100%);
+  border-radius: 10px;
   font-size: 0.85rem;
   color: #495057;
-  margin-top: 0.75rem;
+  margin-top: 0.15rem;
 }
 
 /* Loading overlay */
@@ -247,5 +498,15 @@
 
   .uploaded-file-actions {
     width: 100%;
+  }
+
+  .sprint-card-title {
+    font-size: 1.02rem;
+  }
+
+  .sprint-card .card-body,
+  .sprint-card-header {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
   }
 }

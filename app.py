@@ -13,6 +13,7 @@ from database import (
     get_all_domains,
     get_documents_by_ids,
     get_document_with_modules,
+    get_generation_history,
     get_generation_job,
     init_db,
     insert_document,
@@ -154,6 +155,254 @@ def _serialize_document(doc):
     }
 
 
+def _normalize_search_text(text):
+    return re.sub(r'\s+', ' ', str(text or '')).strip().lower()
+
+
+def _split_into_source_paragraphs(text, max_length=700):
+    normalized = str(text or '').replace('\r\n', '\n').strip()
+    if not normalized:
+        return ['No source text available.']
+
+    primary_chunks = [
+        chunk.strip()
+        for chunk in re.split(r'\n\s*\n+', normalized)
+        if chunk.strip()
+    ]
+
+    paragraphs = []
+    chunks = primary_chunks or [normalized]
+    for chunk in chunks:
+        if len(chunk) <= max_length:
+            paragraphs.append(chunk)
+            continue
+
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r'(?<=[.!?。！？；;])\s+|\n+', chunk)
+            if sentence.strip()
+        ]
+        if not sentences:
+            paragraphs.append(chunk)
+            continue
+
+        buffer = ''
+        for sentence in sentences:
+            next_value = f'{buffer} {sentence}'.strip() if buffer else sentence
+            if len(next_value) > max_length and buffer:
+                paragraphs.append(buffer.strip())
+                buffer = sentence
+            else:
+                buffer = next_value
+
+        if buffer.strip():
+            paragraphs.append(buffer.strip())
+
+    return paragraphs or [normalized]
+
+
+def _build_match_phrases(module):
+    raw_segments = []
+    for field_name in ('title', 'content', 'key_takeaway'):
+        value = str(module.get(field_name, '') or '').strip()
+        if not value:
+            continue
+        raw_segments.append(value)
+        raw_segments.extend(re.split(r'[\n\r]+', value))
+        raw_segments.extend(re.split(r'[。！？!?；;:：,，()（）]', value))
+
+    seen = set()
+    phrases = []
+    for segment in raw_segments:
+        cleaned = segment.strip(' -•\t')
+        normalized = _normalize_search_text(cleaned)
+        if not normalized or normalized in seen:
+            continue
+
+        has_cjk = bool(re.search(r'[\u3400-\u9fff]', normalized))
+        if has_cjk and len(normalized) < 2:
+            continue
+        if not has_cjk and len(normalized) < 4:
+            continue
+
+        seen.add(normalized)
+        phrases.append((normalized, min(max(len(normalized), 3), 30)))
+
+    return sorted(phrases, key=lambda item: item[1], reverse=True)[:24]
+
+
+def _build_match_tokens(module):
+    raw_text = ' '.join(
+        str(module.get(field_name, '') or '')
+        for field_name in ('title', 'content', 'key_takeaway')
+    )
+    raw_tokens = re.split(r'[^0-9A-Za-z\u3400-\u9fff]+', raw_text)
+    tokens = []
+    seen = set()
+
+    for token in raw_tokens:
+        normalized = _normalize_search_text(token)
+        if not normalized or normalized in seen:
+            continue
+
+        has_cjk = bool(re.search(r'[\u3400-\u9fff]', normalized))
+        if has_cjk and len(normalized) < 2:
+            continue
+        if not has_cjk and len(normalized) < 4:
+            continue
+
+        seen.add(normalized)
+        tokens.append(normalized)
+
+    return sorted(tokens, key=len, reverse=True)[:32]
+
+
+def _split_into_source_paragraphs_safe(text, max_length=700):
+    normalized = str(text or '').replace('\r\n', '\n').strip()
+    if not normalized:
+        return ['No source text available.']
+
+    primary_chunks = [
+        chunk.strip()
+        for chunk in re.split(r'\n\s*\n+', normalized)
+        if chunk.strip()
+    ]
+
+    paragraphs = []
+    for chunk in primary_chunks or [normalized]:
+        if len(chunk) <= max_length:
+            paragraphs.append(chunk)
+            continue
+
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r'(?<=[.!?\u3002\uff01\uff1f;\uff1b])\s+|\n+', chunk)
+            if sentence.strip()
+        ]
+        if not sentences:
+            paragraphs.append(chunk)
+            continue
+
+        buffer = ''
+        for sentence in sentences:
+            next_value = f'{buffer} {sentence}'.strip() if buffer else sentence
+            if len(next_value) > max_length and buffer:
+                paragraphs.append(buffer.strip())
+                buffer = sentence
+            else:
+                buffer = next_value
+
+        if buffer.strip():
+            paragraphs.append(buffer.strip())
+
+    return paragraphs or [normalized]
+
+
+def _build_match_phrases_safe(module):
+    raw_segments = []
+    for field_name in ('title', 'content', 'key_takeaway'):
+        value = str(module.get(field_name, '') or '').strip()
+        if not value:
+            continue
+        raw_segments.append(value)
+        raw_segments.extend(re.split(r'[\n\r]+', value))
+        raw_segments.extend(re.split(r'[\u3002\uff01\uff1f!?;\uff1b:\uff1a,\uff0c()\uff08\uff09]', value))
+
+    phrases = []
+    seen = set()
+    for segment in raw_segments:
+        normalized = _normalize_search_text(segment.strip(' -\t'))
+        if not normalized or normalized in seen:
+            continue
+
+        has_cjk = bool(re.search(r'[\u3400-\u9fff]', normalized))
+        if has_cjk and len(normalized) < 2:
+            continue
+        if not has_cjk and len(normalized) < 4:
+            continue
+
+        seen.add(normalized)
+        phrases.append((normalized, min(max(len(normalized), 3), 30)))
+
+    return sorted(phrases, key=lambda item: item[1], reverse=True)[:24]
+
+
+def _score_source_paragraph(paragraph, phrases, tokens):
+    normalized_paragraph = _normalize_search_text(paragraph)
+    if not normalized_paragraph:
+        return 0, []
+
+    score = 0
+    matched_terms = []
+    seen_terms = set()
+
+    for phrase, weight in phrases:
+        if phrase in normalized_paragraph:
+            score += weight
+            if len(matched_terms) < 4 and phrase not in seen_terms:
+                matched_terms.append(phrase)
+                seen_terms.add(phrase)
+
+    token_hits = 0
+    for token in tokens:
+        if token in normalized_paragraph:
+            token_hits += 1
+            if len(matched_terms) < 6 and token not in seen_terms:
+                matched_terms.append(token)
+                seen_terms.add(token)
+
+    return score + token_hits * 2, matched_terms
+
+
+def _build_source_evidence(module, docs_by_id):
+    source_doc_ids = []
+    seen = set()
+    for raw_doc_id in module.get('source_doc_ids', []):
+        try:
+            doc_id = int(raw_doc_id)
+        except (TypeError, ValueError):
+            continue
+        if doc_id in seen:
+            continue
+        source_doc_ids.append(doc_id)
+        seen.add(doc_id)
+
+    phrases = _build_match_phrases_safe(module)
+    tokens = _build_match_tokens(module)
+    evidence = []
+
+    for doc_id in source_doc_ids:
+        doc = docs_by_id.get(doc_id)
+        if not doc:
+            continue
+
+        paragraphs = _split_into_source_paragraphs_safe(build_safe_text(doc['raw_text']))
+        best_index = 0
+        best_score = -1
+        best_terms = []
+
+        for index, paragraph in enumerate(paragraphs):
+            score, matched_terms = _score_source_paragraph(paragraph, phrases, tokens)
+            if score > best_score:
+                best_index = index
+                best_score = score
+                best_terms = matched_terms
+
+        matched_paragraph = paragraphs[best_index] if paragraphs else ''
+        evidence.append({
+            'doc_id': doc_id,
+            'file_name': doc['file_name'],
+            'matched_paragraph_index': best_index,
+            'matched_text': matched_paragraph,
+            'matched_excerpt': build_safe_preview(matched_paragraph),
+            'matched_terms': best_terms[:5],
+            'match_score': max(best_score, 0),
+        })
+
+    evidence.sort(key=lambda item: (-item['match_score'], source_doc_ids.index(item['doc_id'])))
+    return evidence
+
+
 def _build_generation_result(batch_id, docs, llm_result):
     docs_by_id = {int(doc['doc_id']): doc for doc in docs}
     documents_payload = [
@@ -170,6 +419,7 @@ def _build_generation_result(batch_id, docs, llm_result):
     modules_payload = []
     for module in llm_result.get('modules', []):
         source_doc_ids = [int(doc_id) for doc_id in module.get('source_doc_ids', [])]
+        source_evidence = _build_source_evidence(module, docs_by_id)
         modules_payload.append({
             'sequence_order': module.get('sequence_order'),
             'title': module.get('title', ''),
@@ -182,6 +432,12 @@ def _build_generation_result(batch_id, docs, llm_result):
                 for doc_id in source_doc_ids
                 if doc_id in docs_by_id
             ],
+            'primary_source_doc_id': (
+                source_evidence[0]['doc_id']
+                if source_evidence
+                else (source_doc_ids[0] if source_doc_ids else None)
+            ),
+            'source_evidence': source_evidence,
         })
 
     return {
@@ -356,6 +612,29 @@ def api_job(job_id):
     if not job:
         return jsonify({'error': 'Job not found for this trainer.'}), 404
     return jsonify(job)
+
+
+@app.route('/api/history')
+def api_history():
+    try:
+        trainer_id = _resolve_trainer_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    try:
+        limit = int(request.args.get('limit', 10))
+    except ValueError:
+        return jsonify({'error': 'limit must be an integer.'}), 400
+
+    if limit <= 0:
+        return jsonify({'error': 'limit must be greater than 0.'}), 400
+
+    history = get_generation_history(trainer_id=trainer_id, limit=limit)
+    return jsonify({
+        'trainer_id': trainer_id,
+        'count': len(history),
+        'history': history,
+    })
 
 
 @app.route('/api/document/<int:doc_id>')

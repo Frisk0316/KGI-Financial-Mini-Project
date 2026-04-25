@@ -74,6 +74,55 @@ class KnowledgeShredderAppTests(unittest.TestCase):
     def create_document(self, trainer_id, file_name, text_seed):
         return database.insert_document(trainer_id, file_name, text_seed * 20)
 
+    def test_build_generation_result_includes_source_evidence(self):
+        docs = [
+            {
+                'doc_id': 1,
+                'file_name': 'tax.txt',
+                'raw_text': (
+                    'Overview paragraph.\n\n'
+                    'Tax treatment depends on product type and income source. '
+                    'ETF distributions, bond interest, and capital gains should be judged separately.\n\n'
+                    'Closing paragraph.'
+                ),
+            },
+            {
+                'doc_id': 2,
+                'file_name': 'client.txt',
+                'raw_text': (
+                    'Client reminder.\n\n'
+                    'Explain the difference between dividends and capital gains before making a recommendation.'
+                ),
+            },
+        ]
+        llm_result = {
+            'document_summary': 'Integrated summary',
+            'domains': ['TaxRegulations', 'CRM'],
+            'modules': [
+                {
+                    'sequence_order': 1,
+                    'title': 'Tax handling module',
+                    'content': (
+                        'Key points: - Judge by product type and income source. '
+                        '- Separate ETF distributions, bond interest, and capital gains.'
+                    ),
+                    'key_takeaway': 'Explain the difference between dividends and capital gains.',
+                    'reading_time_minutes': 2,
+                    'source_doc_ids': [1, 2],
+                },
+            ],
+        }
+
+        payload = app_module._build_generation_result(88, docs, llm_result)
+        module = payload['modules'][0]
+
+        self.assertEqual(module['primary_source_doc_id'], 1)
+        self.assertEqual([item['doc_id'] for item in module['source_evidence']], [1, 2])
+        self.assertEqual(module['source_evidence'][0]['matched_paragraph_index'], 1)
+        self.assertIn('product type and income source', module['source_evidence'][0]['matched_text'])
+        self.assertIn('capital gains', module['source_evidence'][1]['matched_text'])
+        self.assertTrue(module['source_evidence'][0]['matched_terms'])
+
     def test_domains_include_other_tag(self):
         domains = database.get_all_domains()
         self.assertIn('Other', {domain['domain_name'] for domain in domains})
@@ -123,6 +172,11 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertIn('Client workflow', job_payload['result']['documents'][0]['safe_full_text'])
         self.assertEqual(job_payload['result']['modules'][0]['source_doc_ids'], [doc_one, doc_two])
         self.assertEqual(job_payload['result']['modules'][0]['source_files'], ['first.txt', 'second.txt'])
+        self.assertEqual(job_payload['result']['modules'][0]['primary_source_doc_id'], doc_one)
+        self.assertEqual(
+            [item['doc_id'] for item in job_payload['result']['modules'][0]['source_evidence']],
+            [doc_one, doc_two],
+        )
 
         first_doc = database.get_document_with_modules(doc_one, trainer_id='trainer_001')
         second_doc = database.get_document_with_modules(doc_two, trainer_id='trainer_001')
@@ -189,6 +243,81 @@ class KnowledgeShredderAppTests(unittest.TestCase):
         self.assertEqual(payload['modules'][0]['source_doc_ids'], [doc_id, other_doc_id])
         self.assertEqual(payload['modules'][0]['source_files'], ['sample.txt', 'extra.txt'])
         self.assertEqual({domain['domain_id'] for domain in payload['domains']}, {3, 4})
+
+    def test_history_route_returns_saved_batches_for_trainer(self):
+        doc_one = self.create_document('trainer_history', 'first.txt', 'History batch content one. ')
+        doc_two = self.create_document('trainer_history', 'second.txt', 'History batch content two. ')
+        other_doc = self.create_document('trainer_other', 'other.txt', 'Other trainer content. ')
+
+        batch_id = database.create_generation_batch(
+            [doc_one, doc_two],
+            'trainer_history',
+            [3, 4],
+            ['CRM', 'Compliance'],
+            custom_prompt='History prompt',
+        )
+        job_id = database.create_generation_job(
+            batch_id,
+            doc_one,
+            'trainer_history',
+            [3, 4],
+            ['CRM', 'Compliance'],
+            custom_prompt='History prompt',
+        )
+        database.save_generated_content(
+            batch_id,
+            [doc_one, doc_two],
+            [3, 4],
+            'History summary',
+            [{
+                'sequence_order': 1,
+                'title': 'History Module',
+                'content': 'History module content',
+                'key_takeaway': 'History takeaway',
+                'reading_time_minutes': 2,
+                'source_doc_ids': [doc_one, doc_two],
+            }],
+        )
+        database.update_generation_job(
+            job_id,
+            'completed',
+            result_payload={
+                'batch_id': batch_id,
+                'doc_ids': [doc_one, doc_two],
+                'documents': [],
+                'document_summary': 'History summary',
+                'domains': ['CRM', 'Compliance'],
+                'modules': [],
+            },
+        )
+
+        other_batch_id = database.create_generation_batch(
+            [other_doc],
+            'trainer_other',
+            [3],
+            ['CRM'],
+            custom_prompt='Other prompt',
+        )
+        database.create_generation_job(
+            other_batch_id,
+            other_doc,
+            'trainer_other',
+            [3],
+            ['CRM'],
+            custom_prompt='Other prompt',
+        )
+
+        response = self.client.get('/api/history?limit=10', headers=self.api_headers('trainer_history'))
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+
+        self.assertEqual(payload['trainer_id'], 'trainer_history')
+        self.assertEqual(payload['count'], 1)
+        self.assertEqual(payload['history'][0]['batch_id'], batch_id)
+        self.assertEqual(payload['history'][0]['requested_domains'], ['CRM', 'Compliance'])
+        self.assertEqual(payload['history'][0]['requested_custom_prompt'], 'History prompt')
+        self.assertEqual([doc['file_name'] for doc in payload['history'][0]['documents']], ['first.txt', 'second.txt'])
+        self.assertEqual(payload['history'][0]['modules'][0]['module_title'], 'History Module')
 
     def test_generate_failed_job_preserves_existing_data(self):
         doc_id = self.create_document('trainer_001', 'stable.txt', 'Existing module content. ')

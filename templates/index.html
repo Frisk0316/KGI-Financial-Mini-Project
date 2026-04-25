@@ -32,7 +32,7 @@
         <label for="trainer-id" class="form-label">Trainer ID</label>
         <input type="text" id="trainer-id" class="form-control" value="trainer_001" maxlength="64" />
         <div class="form-text">
-          每次上傳與生成都會綁定到這個 trainer 範圍。
+          每次上傳、生成與歷史查詢都會綁定到這個 trainer 範圍。
         </div>
       </div>
     </div>
@@ -66,7 +66,7 @@
       </div>
       <div class="card-body">
         <p class="text-muted small mb-3">
-          先為這批文件選擇知識標籤。兩階段流程會先整批摘要，再依照這些 tags 產出可追溯的學習卡。
+          先為這批文件選擇知識標籤。系統會先整批摘要，再依照這些 tags 產出可追溯的學習卡。
         </p>
 
         <div class="input-group mb-3">
@@ -100,6 +100,22 @@
       <button id="btn-generate" class="btn btn-primary btn-lg" disabled>
         <i class="bi bi-lightning-charge-fill me-2"></i>Generate Integrated Learning Sprints
       </button>
+    </div>
+
+    <div class="card mb-4 shadow-sm">
+      <div class="card-header bg-white fw-semibold d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <span><i class="bi bi-clock-history me-2"></i>Generation History</span>
+        <button id="btn-refresh-history" type="button" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="text-muted small mb-3">
+          這裡會顯示目前 trainer 過去使用過的文件、選過的 tags、輸入過的 custom prompt，以及生成出的學習卡摘要。
+        </div>
+        <div id="history-empty-state" class="text-muted small">尚無歷史生成紀錄。</div>
+        <div id="history-list" class="d-flex flex-column gap-3"></div>
+      </div>
     </div>
 
     <div id="job-status-card" class="card mb-4 shadow-sm d-none">
