@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS SourceDocuments (
     trainer_id       TEXT NOT NULL DEFAULT 'trainer_001',
     file_name        TEXT NOT NULL,
     raw_text         TEXT NOT NULL,
-    upload_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    upload_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    deleted_at       DATETIME DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS Document_Domain_Map (
@@ -118,6 +119,16 @@ def init_db():
             conn.execute('ALTER TABLE MicroModules ADD COLUMN batch_id INTEGER REFERENCES GenerationBatches(batch_id)')
         if not _column_exists(conn, 'GenerationJobs', 'batch_id'):
             conn.execute('ALTER TABLE GenerationJobs ADD COLUMN batch_id INTEGER REFERENCES GenerationBatches(batch_id)')
+        if not _column_exists(conn, 'SourceDocuments', 'deleted_at'):
+            conn.execute('ALTER TABLE SourceDocuments ADD COLUMN deleted_at DATETIME DEFAULT NULL')
+
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_source_docs_trainer ON SourceDocuments(trainer_id);
+            CREATE INDEX IF NOT EXISTS idx_generation_jobs_trainer ON GenerationJobs(trainer_id);
+            CREATE INDEX IF NOT EXISTS idx_generation_jobs_batch ON GenerationJobs(batch_id);
+            CREATE INDEX IF NOT EXISTS idx_generation_batches_trainer ON GenerationBatches(trainer_id);
+            CREATE INDEX IF NOT EXISTS idx_micro_modules_batch ON MicroModules(batch_id);
+        """)
 
         conn.commit()
 
@@ -155,6 +166,7 @@ def get_documents_by_ids(doc_ids, trainer_id=None):
         SELECT doc_id, trainer_id, file_name, raw_text, upload_timestamp
           FROM SourceDocuments
          WHERE doc_id IN ({placeholders})
+           AND deleted_at IS NULL
     """
     params = list(normalized_doc_ids)
     if trainer_id is not None:
@@ -314,6 +326,7 @@ def _fetch_document_row(conn, doc_id, trainer_id=None):
         SELECT doc_id, trainer_id, file_name, raw_text, upload_timestamp
           FROM SourceDocuments
          WHERE doc_id = ?
+           AND deleted_at IS NULL
     """
     params = [doc_id]
     if trainer_id is not None:
@@ -513,6 +526,61 @@ def get_generation_history(trainer_id, limit=10):
             })
 
     return history
+
+
+def soft_delete_document(doc_id, trainer_id):
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE SourceDocuments
+               SET deleted_at = CURRENT_TIMESTAMP
+             WHERE doc_id = ?
+               AND trainer_id = ?
+               AND deleted_at IS NULL
+            """,
+            (int(doc_id), trainer_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def mark_document_deleted_in_result_jsons(doc_id):
+    doc_id = int(doc_id)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT gj.job_id, gj.result_json
+              FROM GenerationJobs gj
+              JOIN Batch_Document_Map bdm ON gj.batch_id = bdm.batch_id
+             WHERE bdm.doc_id = ?
+               AND gj.result_json IS NOT NULL
+            """,
+            (doc_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                result = json.loads(row['result_json'])
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            documents = result.get('documents')
+            if not isinstance(documents, list):
+                continue
+
+            changed = False
+            for doc in documents:
+                if int(doc.get('doc_id', -1)) == doc_id and not doc.get('deleted'):
+                    doc['deleted'] = True
+                    changed = True
+
+            if changed:
+                conn.execute(
+                    'UPDATE GenerationJobs SET result_json = ? WHERE job_id = ?',
+                    (json.dumps(result, ensure_ascii=False), row['job_id']),
+                )
+
+        conn.commit()
 
 
 def get_generation_job(job_id, trainer_id=None):

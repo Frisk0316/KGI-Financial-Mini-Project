@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 
 
 BASE_DIR = os.path.dirname(__file__)
+logger = logging.getLogger('knowledge_shredder.llm')
 DEFAULT_MODEL = 'gpt-5.4-mini'
 TARGET_READING_TIME_MINUTES = 2.0
 MOCK_LLM_ENABLED_VALUES = {'1', 'true', 'yes', 'on'}
@@ -309,13 +311,15 @@ def _calculate_retry_delay_seconds(exc, attempt):
     return min(DEFAULT_TRANSIENT_DELAY_SECONDS * attempt, 10.0)
 
 
-def _request_structured_output(api_key, model, prompt, schema_name, schema):
+def _request_structured_output(api_key, model, prompt, schema_name, schema, request_id=None):
     client = _create_openai_client(api_key)
     max_attempts = _read_positive_int_env('OPENAI_MAX_RETRIES', DEFAULT_OPENAI_MAX_RETRIES)
+    log_ctx = 'schema=%s request_id=%s' % (schema_name, request_id or '-')
 
     response = None
     for attempt in range(1, max_attempts + 1):
         try:
+            logger.info('llm_request_start attempt=%d %s', attempt, log_ctx)
             response = client.responses.create(
                 model=model,
                 instructions=SYSTEM_PROMPT,
@@ -329,10 +333,13 @@ def _request_structured_output(api_key, model, prompt, schema_name, schema):
                     }
                 },
             )
+            logger.info('llm_request_ok attempt=%d %s', attempt, log_ctx)
             break
         except Exception as exc:
             if attempt < max_attempts and _is_retryable_llm_error(exc):
-                time.sleep(_calculate_retry_delay_seconds(exc, attempt))
+                delay = _calculate_retry_delay_seconds(exc, attempt)
+                logger.warning('llm_request_retry attempt=%d delay=%.1fs error=%s %s', attempt, delay, exc, log_ctx)
+                time.sleep(delay)
                 continue
 
             attempt_label = 'attempt' if attempt == 1 else 'attempts'
@@ -500,8 +507,14 @@ def validate_micro_modules_payload(payload, expected_domains, valid_doc_ids):
 
         if not title:
             raise ValueError(f'Module #{index} is missing a title.')
+        if len(title) > 120:
+            raise ValueError(f'Module #{index} title exceeds 120 characters.')
         if not content:
             raise ValueError(f'Module #{index} is missing content.')
+        if len(content) < 50:
+            raise ValueError(f'Module #{index} content is too short (minimum 50 characters).')
+        if key_takeaway and len(key_takeaway) < 10:
+            raise ValueError(f'Module #{index} key_takeaway is too short (minimum 10 characters).')
 
         try:
             sequence_order = int(module.get('sequence_order', index))
@@ -823,7 +836,7 @@ def _generate_batch_modules_mock(summary_payload, documents, domain_names, custo
     }
 
 
-def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
+def generate_batch_micro_modules(documents, domain_names, custom_prompt='', request_id=None):
     if not documents:
         raise ValueError('At least one source document is required.')
     if not domain_names:
@@ -857,6 +870,7 @@ def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
         stage_one_prompt,
         'batch_document_summaries',
         SUMMARY_SCHEMA,
+        request_id=request_id,
     )
     validated_summary_payload = _validate_batch_summary_payload(summary_payload, documents)
 
@@ -865,18 +879,18 @@ def generate_batch_micro_modules(documents, domain_names, custom_prompt=''):
         domain_names,
         custom_prompt=custom_prompt,
     )
+
     generation_payload = _request_structured_output(
         api_key,
         model,
         stage_two_prompt,
         'integrated_micro_modules',
         MODULES_SCHEMA,
+        request_id=request_id,
     )
-    validated_payload = validate_micro_modules_payload(
-        generation_payload,
-        domain_names,
-        valid_doc_ids,
-    )
+    validated_payload = validate_micro_modules_payload(generation_payload, domain_names, valid_doc_ids)
+    if validated_payload is None:
+        raise LLMServiceError('LLM module generation returned no validated payload.')
 
     if not validated_payload['document_summary']:
         validated_payload['document_summary'] = validated_summary_payload['batch_summary']

@@ -25,9 +25,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateGenerateButtonState();
 });
 
-function buildFriendlyError(rawMessage) {
+const ERROR_CODE_MESSAGES = {
+  FILE_TOO_LARGE: '檔案大小超過 16 MB 限制，請更換較小的檔案。',
+  UNSUPPORTED_FILE_TYPE: '這個檔案格式目前不支援，請改用 PDF、DOCX、TXT 或 MD。',
+  NO_FILE_PROVIDED: '這次請求沒有帶入檔案。',
+  EMPTY_DOCUMENT: '文件沒有足夠可擷取的文字內容，可能是空白檔或圖片型 PDF。',
+  PARSE_FAILED: '檔案內容無法正確解析，請確認檔案格式與內容是否正常。',
+  INVALID_TRAINER_ID: 'Trainer ID 格式不正確，只能使用英數字、底線或連字號。',
+  INVALID_DOC_IDS: '請至少上傳一份文件，並確認文件 ID 格式正確。',
+  INVALID_DOMAIN_IDS: '請至少選擇一個正確的 domain tag。',
+  CUSTOM_PROMPT_TOO_LONG: 'Custom Prompt 超過 4000 字元上限，請縮短後再試。',
+  UNKNOWN_DOMAIN: '你選到的 domain tag 不存在，請重新整理後再試。',
+  DOCUMENT_NOT_FOUND: '找不到這份文件，可能不屬於目前的 trainer 或已被刪除。',
+  JOB_NOT_FOUND: '找不到這筆生成工作，可能已失效或 trainer 範圍不一致。',
+  ROUTE_NOT_FOUND: '目前找不到對應的 API 路徑。',
+  INVALID_REQUEST_BODY: '送出的資料格式不正確，請重新操作一次。',
+  GENERATION_FAILED: '生成過程中發生未預期錯誤，請稍後再試。',
+};
+
+function buildFriendlyError(rawMessage, errorCode = null) {
   const fallbackMessage = '系統暫時無法完成這次操作，請稍後再試。';
   const technicalDetail = String(rawMessage || '').trim();
+
+  if (errorCode && ERROR_CODE_MESSAGES[errorCode]) {
+    return { userMessage: ERROR_CODE_MESSAGES[errorCode], technicalDetail };
+  }
 
   if (!technicalDetail) {
     return { userMessage: fallbackMessage, technicalDetail: '' };
@@ -243,8 +265,24 @@ function handleTrainerIdInput(event) {
   scheduleHistoryReload();
 }
 
+const CUSTOM_PROMPT_MAX_CHARS = 4000;
+
 function handleCustomPromptInput(event) {
   state.customPrompt = event.target.value;
+  updatePromptCounter();
+  updateGenerateButtonState();
+}
+
+function updatePromptCounter() {
+  const counter = document.getElementById('custom-prompt-counter');
+  if (!counter) {
+    return;
+  }
+  const len = state.customPrompt.length;
+  const remaining = CUSTOM_PROMPT_MAX_CHARS - len;
+  counter.textContent = `${len} / ${CUSTOM_PROMPT_MAX_CHARS} 字`;
+  counter.classList.toggle('text-danger', remaining < 0);
+  counter.classList.toggle('fw-semibold', remaining < 0);
 }
 
 function buildApiHeaders(extraHeaders = {}) {
@@ -507,7 +545,8 @@ function renderUploadedDocuments() {
 
 function updateGenerateButtonState() {
   const button = document.getElementById('btn-generate');
-  const canGenerate = state.documents.length > 0 && state.selectedDomainIds.size > 0 && !state.isGenerating;
+  const promptTooLong = state.customPrompt.length > CUSTOM_PROMPT_MAX_CHARS;
+  const canGenerate = state.documents.length > 0 && state.selectedDomainIds.size > 0 && !state.isGenerating && !promptTooLong;
   button.disabled = !canGenerate;
 
   const warning = document.getElementById('domain-warning');
@@ -606,7 +645,9 @@ async function uploadSingleFile(file) {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.error || 'Upload failed.');
+    const err = new Error(data.error || 'Upload failed.');
+    err.errorCode = data.error_code || null;
+    throw err;
   }
   return data;
 }
@@ -624,7 +665,7 @@ function addUploadedDocument(data) {
   document.getElementById('trainer-id').value = data.trainer_id;
 }
 
-function removeDocument(docId) {
+async function removeDocument(docId) {
   if (state.isGenerating) {
     return;
   }
@@ -633,6 +674,15 @@ function removeDocument(docId) {
   clearSplitScreen();
   clearJobStatus();
   updateGenerateButtonState();
+
+  try {
+    await fetch(`/api/document/${docId}`, {
+      method: 'DELETE',
+      headers: buildApiHeaders(),
+    });
+  } catch (_err) {
+    // deletion is best-effort; UI state is already updated
+  }
 }
 
 function clearAllFiles() {
@@ -650,8 +700,12 @@ function clearAllFiles() {
 }
 
 async function handleGenerate() {
-  if (state.documents.length === 0) {
-    showError('Please upload at least one document before generating.');
+  if (state.documents.length === 0 || state.isGenerating) {
+    return;
+  }
+
+  if (state.customPrompt.length > CUSTOM_PROMPT_MAX_CHARS) {
+    showError('Custom Prompt 超過 4000 字元上限，請縮短後再試。');
     return;
   }
 
@@ -673,7 +727,9 @@ async function handleGenerate() {
     });
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error || 'Generation failed.');
+      const err = new Error(data.error || 'Generation failed.');
+      err.errorCode = data.error_code || null;
+      throw err;
     }
 
     const jobs = data.jobs || [];
@@ -700,9 +756,15 @@ async function handleGenerate() {
   }
 }
 
+const POLL_INITIAL_MS = 1000;
+const POLL_MAX_MS = 8000;
+const POLL_BACKOFF_FACTOR = 1.5;
+
 async function pollJobsUntilFinished(jobs) {
   const pendingJobs = new Map((jobs || []).map(job => [job.job_id, job]));
   const finalJobs = new Map();
+  const startTime = Date.now();
+  let pollInterval = POLL_INITIAL_MS;
 
   while (pendingJobs.size > 0) {
     const currentJobs = Array.from(pendingJobs.values());
@@ -713,7 +775,9 @@ async function pollJobsUntilFinished(jobs) {
         }).then(async res => {
           const data = await res.json();
           if (!res.ok) {
-            throw new Error(data.error || 'Failed to fetch job status.');
+            const err = new Error(data.error || 'Failed to fetch job status.');
+            err.errorCode = data.error_code || null;
+            throw err;
           }
           return data;
         })
@@ -731,6 +795,10 @@ async function pollJobsUntilFinished(jobs) {
     const failedCount = Array.from(finalJobs.values()).filter(job => job.status === 'failed').length;
     const runningCount = responses.filter(job => job.status === 'running').length;
     const queuedCount = responses.filter(job => job.status === 'queued').length;
+    const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+    const elapsedLabel = elapsedSec < 60
+      ? `${elapsedSec}s`
+      : `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s`;
     const status = failedCount > 0
       ? 'failed'
       : pendingJobs.size === 0
@@ -741,14 +809,15 @@ async function pollJobsUntilFinished(jobs) {
 
     showJobStatus(
       status,
-      `Completed: ${completedCount}/${jobs.length}, Running: ${runningCount}, Queued: ${queuedCount}, Failed: ${failedCount}`
+      `Completed: ${completedCount}/${jobs.length}, Running: ${runningCount}, Queued: ${queuedCount}, Failed: ${failedCount} — ${elapsedLabel} elapsed`
     );
 
     if (pendingJobs.size === 0) {
       return jobs.map(job => finalJobs.get(job.job_id)).filter(Boolean);
     }
 
-    await wait(1200);
+    await wait(pollInterval);
+    pollInterval = Math.min(pollInterval * POLL_BACKOFF_FACTOR, POLL_MAX_MS);
   }
 
   return [];
@@ -765,7 +834,9 @@ function renderBatchResults(jobs) {
   const job = jobs[0];
   const result = job.result || {};
   const documents = (result.documents || []).map(doc => {
-    const safeFullText = doc.safe_full_text || doc.preview_text || '';
+    const safeFullText = doc.deleted
+      ? '（此文件已刪除，原始內容已移除）'
+      : (doc.safe_full_text || doc.preview_text || '');
     const paragraphs = splitIntoParagraphsSafe(safeFullText);
     return {
       ...doc,
@@ -1387,11 +1458,13 @@ function hideLoading() {
   document.getElementById('loading-overlay').classList.add('d-none');
 }
 
-function showError(message) {
+function showError(errorOrMessage) {
   const alert = document.getElementById('error-alert');
   const details = document.getElementById('error-details');
   const technicalDetail = document.getElementById('error-technical-detail');
-  const friendly = buildFriendlyError(message);
+  const rawMessage = errorOrMessage instanceof Error ? errorOrMessage.message : String(errorOrMessage || '');
+  const errorCode = errorOrMessage instanceof Error ? (errorOrMessage.errorCode || null) : null;
+  const friendly = buildFriendlyError(rawMessage, errorCode);
 
   document.getElementById('error-message').textContent = friendly.userMessage;
   technicalDetail.textContent = friendly.technicalDetail;

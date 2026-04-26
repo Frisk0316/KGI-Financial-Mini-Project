@@ -1,10 +1,13 @@
 import argparse
+import logging
 import os
 import re
+import time
+import uuid
 from threading import Semaphore, Thread
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 from database import (
@@ -17,7 +20,9 @@ from database import (
     get_generation_job,
     init_db,
     insert_document,
+    mark_document_deleted_in_result_jsons,
     save_generated_content,
+    soft_delete_document,
     update_generation_job,
 )
 from file_parser import build_safe_preview, build_safe_text, extract_text
@@ -34,6 +39,35 @@ app.config['INLINE_GENERATION_JOBS'] = False
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'md'}
 
 UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s',
+)
+logger = logging.getLogger('knowledge_shredder')
+
+
+@app.before_request
+def _attach_request_id():
+    g.request_id = str(uuid.uuid4())
+    g.request_start = time.monotonic()
+
+
+@app.after_request
+def _log_request(response):
+    duration_ms = round((time.monotonic() - g.request_start) * 1000)
+    trainer_id = request.headers.get('X-Trainer-Id', '-')
+    logger.info(
+        'method=%s path=%s status=%s duration_ms=%d trainer_id=%s request_id=%s',
+        request.method,
+        request.path,
+        response.status_code,
+        duration_ms,
+        trainer_id,
+        g.request_id,
+    )
+    return response
+
 
 with app.app_context():
     init_db()
@@ -450,11 +484,15 @@ def _build_generation_result(batch_id, docs, llm_result):
     }
 
 
-def _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt):
+def _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt, request_id=None):
+    log_ctx = 'job_id=%d batch_id=%d request_id=%s' % (job_id, batch_id, request_id or '-')
     try:
         with GENERATION_WORKER_SEMAPHORE:
+            logger.info('generation_start %s', log_ctx)
             update_generation_job(job_id, 'running')
-            llm_result = generate_batch_micro_modules(docs, domain_names, custom_prompt=custom_prompt)
+            llm_result = generate_batch_micro_modules(
+                docs, domain_names, custom_prompt=custom_prompt, request_id=request_id,
+            )
 
         save_generated_content(
             batch_id,
@@ -464,13 +502,18 @@ def _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom
             llm_result.get('modules', []),
         )
         update_generation_job(job_id, 'completed', result_payload=_build_generation_result(batch_id, docs, llm_result))
+        logger.info('generation_complete %s', log_ctx)
     except LLMConfigurationError as exc:
+        logger.warning('generation_config_error %s error=%s', log_ctx, exc)
         update_generation_job(job_id, 'failed', error_message=str(exc))
     except LLMServiceError as exc:
+        logger.warning('generation_service_error %s error=%s', log_ctx, exc)
         update_generation_job(job_id, 'failed', error_message=str(exc))
     except ValueError as exc:
+        logger.warning('generation_validation_error %s error=%s', log_ctx, exc)
         update_generation_job(job_id, 'failed', error_message=f'The AI returned invalid module data: {exc}')
-    except Exception:
+    except Exception as exc:
+        logger.exception('generation_unexpected_error %s error=%s', log_ctx, exc)
         update_generation_job(
             job_id,
             'failed',
@@ -479,13 +522,16 @@ def _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom
 
 
 def _start_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt):
+    request_id = getattr(g, 'request_id', None)
+
     if app.config.get('INLINE_GENERATION_JOBS'):
-        _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt)
+        _run_generation_job(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt, request_id=request_id)
         return
 
     worker = Thread(
         target=_run_generation_job,
         args=(job_id, batch_id, docs, domain_ids, domain_names, custom_prompt),
+        kwargs={'request_id': request_id},
         daemon=True,
     )
     worker.start()
@@ -493,12 +539,12 @@ def _start_generation_job(job_id, batch_id, docs, domain_ids, domain_names, cust
 
 @app.errorhandler(413)
 def too_large(_error):
-    return jsonify({'error': 'File exceeds the 16 MB upload limit.'}), 413
+    return jsonify({'error': 'File exceeds the 16 MB upload limit.', 'error_code': 'FILE_TOO_LARGE'}), 413
 
 
 @app.errorhandler(404)
 def not_found(_error):
-    return jsonify({'error': 'Route not found.'}), 404
+    return jsonify({'error': 'Route not found.', 'error_code': 'ROUTE_NOT_FOUND'}), 404
 
 
 @app.route('/')
@@ -516,41 +562,49 @@ def api_upload():
     try:
         trainer_id = _resolve_trainer_id()
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
 
     if 'file' not in request.files:
-        return jsonify({'error': 'No file provided.'}), 400
+        return jsonify({'error': 'No file provided.', 'error_code': 'NO_FILE_PROVIDED'}), 400
 
     file = request.files['file']
     if not file.filename:
-        return jsonify({'error': 'No file selected.'}), 400
+        return jsonify({'error': 'No file selected.', 'error_code': 'NO_FILE_PROVIDED'}), 400
 
     ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
     if ext not in ALLOWED_EXTENSIONS:
-        return jsonify({'error': f'File type .{ext} is not supported. Please upload PDF, DOCX, TXT, or MD.'}), 415
+        return jsonify({
+            'error': f'File type .{ext} is not supported. Please upload PDF, DOCX, TXT, or MD.',
+            'error_code': 'UNSUPPORTED_FILE_TYPE',
+        }), 415
 
     file_bytes = file.read()
 
     try:
         raw_text = extract_text(secure_filename(file.filename), file_bytes)
     except Exception as exc:
-        return jsonify({'error': f'Failed to parse file: {exc}'}), 422
+        return jsonify({'error': f'Failed to parse file: {exc}', 'error_code': 'PARSE_FAILED'}), 422
 
     if len(raw_text.strip()) < 50:
-        return jsonify({'error': 'Document appears to be empty or contains no extractable text (e.g. image-only PDF).'}), 422
+        return jsonify({
+            'error': 'Document appears to be empty or contains no extractable text (e.g. image-only PDF).',
+            'error_code': 'EMPTY_DOCUMENT',
+        }), 422
 
+    safe_text = build_safe_text(raw_text)
     doc_id = insert_document(
         trainer_id=trainer_id,
         file_name=secure_filename(file.filename),
-        raw_text=raw_text,
+        raw_text=safe_text,
     )
+    logger.info('document_uploaded doc_id=%d trainer_id=%s request_id=%s', doc_id, trainer_id, g.request_id)
 
     return jsonify({
         'doc_id': doc_id,
         'trainer_id': trainer_id,
         'file_name': file.filename,
-        'preview_text': build_safe_preview(raw_text),
-        'char_count': len(raw_text),
+        'preview_text': build_safe_preview(safe_text),
+        'char_count': len(safe_text),
     }), 201
 
 
@@ -558,28 +612,40 @@ def api_upload():
 def api_generate():
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({'error': 'Request body must be JSON.'}), 400
+        return jsonify({'error': 'Request body must be JSON.', 'error_code': 'INVALID_REQUEST_BODY'}), 400
 
     try:
         trainer_id = _resolve_trainer_id(data=data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
+
+    try:
         doc_ids = _normalize_doc_ids(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_DOC_IDS'}), 400
+
+    try:
         domain_ids = _normalize_domain_ids(data.get('domain_ids', []))
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_DOMAIN_IDS'}), 400
+
+    try:
         custom_prompt = _normalize_custom_prompt(data.get('custom_prompt'))
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': str(exc), 'error_code': 'CUSTOM_PROMPT_TOO_LONG'}), 400
 
     all_domains = {domain['domain_id']: domain['domain_name'] for domain in get_all_domains()}
     domain_names = []
     for domain_id in domain_ids:
         if domain_id not in all_domains:
-            return jsonify({'error': f'Unknown domain_id: {domain_id}'}), 400
+            return jsonify({'error': f'Unknown domain_id: {domain_id}', 'error_code': 'UNKNOWN_DOMAIN'}), 400
         domain_names.append(all_domains[domain_id])
 
     docs = get_documents_by_ids(doc_ids, trainer_id=trainer_id)
     if len(docs) != len(doc_ids):
         found_doc_ids = {doc['doc_id'] for doc in docs}
         missing_doc_ids = [doc_id for doc_id in doc_ids if doc_id not in found_doc_ids]
-        return jsonify({'error': f'Documents not found for this trainer: {missing_doc_ids}'}), 404
+        return jsonify({'error': f'Documents not found for this trainer: {missing_doc_ids}', 'error_code': 'DOCUMENT_NOT_FOUND'}), 404
 
     batch_id = create_generation_batch(doc_ids, trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
     job_id = create_generation_job(batch_id, docs[0]['doc_id'], trainer_id, domain_ids, domain_names, custom_prompt=custom_prompt)
@@ -606,11 +672,11 @@ def api_job(job_id):
     try:
         trainer_id = _resolve_trainer_id()
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
 
     job = get_generation_job(job_id, trainer_id=trainer_id)
     if not job:
-        return jsonify({'error': 'Job not found for this trainer.'}), 404
+        return jsonify({'error': 'Job not found for this trainer.', 'error_code': 'JOB_NOT_FOUND'}), 404
     return jsonify(job)
 
 
@@ -619,15 +685,15 @@ def api_history():
     try:
         trainer_id = _resolve_trainer_id()
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
 
     try:
         limit = int(request.args.get('limit', 10))
     except ValueError:
-        return jsonify({'error': 'limit must be an integer.'}), 400
+        return jsonify({'error': 'limit must be an integer.', 'error_code': 'INVALID_REQUEST_BODY'}), 400
 
     if limit <= 0:
-        return jsonify({'error': 'limit must be greater than 0.'}), 400
+        return jsonify({'error': 'limit must be greater than 0.', 'error_code': 'INVALID_REQUEST_BODY'}), 400
 
     history = get_generation_history(trainer_id=trainer_id, limit=limit)
     return jsonify({
@@ -642,12 +708,28 @@ def api_document(doc_id):
     try:
         trainer_id = _resolve_trainer_id()
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
 
     doc = get_document_with_modules(doc_id, trainer_id=trainer_id)
     if not doc:
-        return jsonify({'error': 'Document not found for this trainer.'}), 404
+        return jsonify({'error': 'Document not found for this trainer.', 'error_code': 'DOCUMENT_NOT_FOUND'}), 404
     return jsonify(_serialize_document(doc))
+
+
+@app.route('/api/document/<int:doc_id>', methods=['DELETE'])
+def api_delete_document(doc_id):
+    try:
+        trainer_id = _resolve_trainer_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'error_code': 'INVALID_TRAINER_ID'}), 400
+
+    deleted = soft_delete_document(doc_id, trainer_id)
+    if not deleted:
+        return jsonify({'error': 'Document not found for this trainer.', 'error_code': 'DOCUMENT_NOT_FOUND'}), 404
+
+    mark_document_deleted_in_result_jsons(doc_id)
+    logger.info('document_deleted doc_id=%d trainer_id=%s request_id=%s', doc_id, trainer_id, g.request_id)
+    return jsonify({'doc_id': doc_id, 'deleted': True}), 200
 
 
 if __name__ == '__main__':
